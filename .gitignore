@@ -1,0 +1,35 @@
+# XcodeGen output — the project is generated from project.yml, never edited by hand
+*.xcodeproj/
+DerivedData/
+.swiftpm/
+
+# Build output
+build/
+*.dmg
+AppIcon.iconset/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Signing / notarization secrets — NEVER commit these
+*.p12
+*.p8
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+
+# Loose icon previews written by Scripts/make_icon.swift
+icon-preview-*.png

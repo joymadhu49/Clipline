@@ -1,0 +1,25 @@
+name: Feature request
+description: Something Clipline should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The task you are stuck on, rather than the feature you have in mind for it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you think would fix it
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: >
+        Worth knowing: Clipline is deliberately one narrow column with no detail
+        pane, and it stays small in memory and on disk. Requests that keep it
+        that way have a much better chance.

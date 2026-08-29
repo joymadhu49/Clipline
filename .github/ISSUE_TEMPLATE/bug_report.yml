@@ -1,0 +1,52 @@
+name: Bug report
+description: Something Clipline does wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        1. Copied an image from Preview
+        2. Pressed ⌘⇧V and hit return in Pages
+        3. Nothing pasted
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Clipline version
+      description: Menu bar icon → Settings → About, or the version of the DMG you downloaded.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "14.5 (Apple silicon)"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: accessibility
+    attributes:
+      label: Accessibility
+      description: >
+        Pasting needs Accessibility access, because Clipline presses ⌘V for you.
+        Check System Settings → Privacy & Security → Accessibility.
+      options:
+        - label: Clipline has Accessibility access
+
+  - type: textarea
+    id: audit
+    attributes:
+      label: Audit log (optional)
+      description: >
+        Every deletion is recorded. If history disappeared, the tail of the log
+        usually says what removed it — `tail -50 ~/Library/Application\ Support/Clipline/audit.log`.
+        Check it for anything private before pasting it here.
+      render: text

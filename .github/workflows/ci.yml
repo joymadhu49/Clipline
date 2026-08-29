@@ -1,0 +1,67 @@
+name: CI
+
+# Builds the app on every push and pull request so regressions surface
+# immediately instead of at release-tag time. Runs the same Scripts/build.sh the
+# release pipeline runs; with no Developer ID certificate on the runner it falls
+# back to ad-hoc signing, which is exactly what a compile + bundle check needs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build + bundle (ad-hoc signed)
+        run: bash Scripts/build.sh
+
+      - name: Verify bundle layout
+        run: |
+          set -euo pipefail
+          APP="build/Clipline.app"
+          PLIST="$APP/Contents/Info.plist"
+
+          test -x "$APP/Contents/MacOS/Clipline"
+          test -f "$PLIST"
+          test -f "$APP/Contents/Resources/AppIcon.icns"
+
+          # Universal: an arm64-only build would refuse to launch on an Intel Mac,
+          # which macOS 14 still supports.
+          ARCHS=$(lipo -archs "$APP/Contents/MacOS/Clipline")
+          echo "architectures: $ARCHS"
+          grep -q arm64 <<<"$ARCHS"
+          grep -q x86_64 <<<"$ARCHS"
+
+          # LSUIElement is what keeps Clipline out of the Dock. Losing it turns a
+          # menu bar app into a windowed one, which is a silent, shipping-grade bug.
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$PLIST")" = "true"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST"
+
+      - name: Verify the icon renders from source
+        run: |
+          set -euo pipefail
+          # Resources/AppIcon.icns is committed, but it is generated from
+          # Scripts/make_icon.swift — this proves the generator still works.
+          rm -f Resources/AppIcon.icns Resources/AppIcon.png
+          bash Scripts/make-icon.sh
+          test -f Resources/AppIcon.icns
+
+      - name: Check the DMG packaging path
+        run: |
+          set -euo pipefail
+          bash Scripts/make-dmg.sh
+          ls -lh build/Clipline-*.dmg
