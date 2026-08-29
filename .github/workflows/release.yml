@@ -172,6 +172,17 @@ jobs:
       - name: Build + sign app
         run: bash Scripts/build.sh
 
+      # Notarize the app BEFORE it goes into the DMG, so the copy the user drags
+      # to /Applications carries its own ticket and verifies without asking Apple
+      # over the network. Notarizing only the DMG leaves the extracted app
+      # ticketless.
+      - name: Notarize + staple the app
+        env:
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        run: bash Scripts/notarize.sh build/Clipline.app
+
       - name: Install create-dmg (styled installer window)
         run: brew install create-dmg
 
@@ -180,7 +191,9 @@ jobs:
           TAG: ${{ needs.check.outputs.tag }}
         run: bash Scripts/make-dmg.sh "${TAG#v}"
 
-      - name: Notarize + staple
+      # Second pass, on the DMG itself: this is the ticket Gatekeeper reads when
+      # someone opens the downloaded file.
+      - name: Notarize + staple the DMG
         env:
           AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
           AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}

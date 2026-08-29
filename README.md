@@ -165,11 +165,19 @@ exactly once.
 The same three scripts run locally when you want to cut a build by hand:
 
 ```sh
-bash Scripts/build.sh                     # universal, Developer ID signed
-bash Scripts/make-dmg.sh                  # -> build/Clipline-<version>.dmg
-AC_KEYCHAIN_PROFILE=clipline-notary \
-  bash Scripts/notarize.sh                # submit to Apple, staple the ticket
+export AC_KEYCHAIN_PROFILE=clipline-notary
+bash Scripts/build.sh                        # universal, Developer ID signed
+bash Scripts/notarize.sh build/Clipline.app  # ticket stapled to the app
+bash Scripts/make-dmg.sh                     # -> build/Clipline-<version>.dmg
+bash Scripts/notarize.sh                     # ticket stapled to the DMG
 ```
+
+Notarization runs twice on purpose. The DMG's ticket is what Gatekeeper reads when
+someone opens the download, but an app dragged out of a DMG that was notarized alone
+carries no ticket of its own and has to be checked against Apple over the network on
+first launch. Stapling the app first, then building the DMG around it, means the copy
+in `/Applications` verifies offline. `xcrun stapler validate` on the `.app` is how you
+check: it says "does not have a ticket stapled to it" when this step is missing.
 
 ### QA hooks
 
