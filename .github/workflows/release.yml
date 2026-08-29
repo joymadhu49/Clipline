@@ -82,30 +82,43 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release due: ${TAG:-no}"
 
-      # Without the certificate and the notary key there is nothing to sign or
-      # notarize with, so say so plainly and leave the run green rather than
-      # failing every push to main until the secrets are added.
+      # All six are needed, and they are needed at different points: a missing
+      # notary key ID is only discovered after a full macOS build and a DMG have
+      # already been paid for. Check the lot up front and leave the run green
+      # rather than failing every push to main until they are added.
       - name: Check the signing secrets are in place
         id: secrets
         env:
-          CERT: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
-          NOTARY_KEY: ${{ secrets.AC_API_KEY_P8 }}
+          DEVELOPER_ID_CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
         run: |
           set -euo pipefail
-          if [[ -n "${CERT:-}" && -n "${NOTARY_KEY:-}" ]]; then
+          MISSING=()
+          for name in DEVELOPER_ID_CERT_P12 DEVELOPER_ID_CERT_PASSWORD KEYCHAIN_PASSWORD \
+                      AC_API_KEY_P8 AC_API_KEY_ID AC_API_ISSUER_ID; do
+            [[ -n "${!name:-}" ]] || MISSING+=("$name")
+          done
+
+          if [[ ${#MISSING[@]} -eq 0 ]]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "All six signing secrets present."
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
             {
               echo "### No release cut"
               echo
-              echo "The signing secrets are not set, so this run skipped the build."
-              echo "Add all six under **Settings -> Secrets and variables -> Actions**,"
-              echo "then re-run this workflow:"
+              echo "Skipped the build: ${#MISSING[@]} of 6 signing secrets are missing."
               echo
-              echo '`DEVELOPER_ID_CERT_P12` `DEVELOPER_ID_CERT_PASSWORD` `KEYCHAIN_PASSWORD`'
-              echo '`AC_API_KEY_P8` `AC_API_KEY_ID` `AC_API_ISSUER_ID`'
+              for name in "${MISSING[@]}"; do echo "- \`$name\`"; done
+              echo
+              echo "Add them under **Settings -> Secrets and variables -> Actions**,"
+              echo "then re-run this workflow."
             } >> "$GITHUB_STEP_SUMMARY"
+            printf 'missing: %s\n' "${MISSING[@]}"
           fi
 
   release:
