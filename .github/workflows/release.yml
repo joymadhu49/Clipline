@@ -53,7 +53,7 @@ jobs:
       tag: ${{ steps.ver.outputs.tag }}
       signing: ${{ steps.secrets.outputs.present }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Decide whether a release is due
         id: ver
         env:
@@ -115,7 +115,7 @@ jobs:
     env:
       CLIPLINE_SIGNING_IDENTITY: "Developer ID Application"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Select the newest installed Xcode
         # XcodeGen writes objectVersion 77, which only Xcode 16 and later can

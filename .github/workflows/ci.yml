@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Select the newest installed Xcode
         # XcodeGen writes objectVersion 77, which only Xcode 16 and later can
