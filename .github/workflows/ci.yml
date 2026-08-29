@@ -13,14 +13,22 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Toolchain versions
+      - name: Select the newest installed Xcode
+        # XcodeGen writes objectVersion 77, which only Xcode 16 and later can
+        # read, and a runner image's *default* Xcode is often several versions
+        # behind the newest one it has installed.
         run: |
-          swift --version
+          set -euo pipefail
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$NEWEST"
           xcodebuild -version
+
+      - name: Toolchain versions
+        run: swift --version
 
       - name: Install XcodeGen
         run: brew install xcodegen

@@ -51,6 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
+      signing: ${{ steps.secrets.outputs.present }}
     steps:
       - uses: actions/checkout@v4
       - name: Decide whether a release is due
@@ -81,14 +82,50 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release due: ${TAG:-no}"
 
+      # Without the certificate and the notary key there is nothing to sign or
+      # notarize with, so say so plainly and leave the run green rather than
+      # failing every push to main until the secrets are added.
+      - name: Check the signing secrets are in place
+        id: secrets
+        env:
+          CERT: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          NOTARY_KEY: ${{ secrets.AC_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${CERT:-}" && -n "${NOTARY_KEY:-}" ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### No release cut"
+              echo
+              echo "The signing secrets are not set, so this run skipped the build."
+              echo "Add all six under **Settings -> Secrets and variables -> Actions**,"
+              echo "then re-run this workflow:"
+              echo
+              echo '`DEVELOPER_ID_CERT_P12` `DEVELOPER_ID_CERT_PASSWORD` `KEYCHAIN_PASSWORD`'
+              echo '`AC_API_KEY_P8` `AC_API_KEY_ID` `AC_API_ISSUER_ID`'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   release:
     needs: check
-    if: needs.check.outputs.tag != ''
-    runs-on: macos-14
+    if: needs.check.outputs.tag != '' && needs.check.outputs.signing == 'true'
+    runs-on: macos-15
     env:
       CLIPLINE_SIGNING_IDENTITY: "Developer ID Application"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select the newest installed Xcode
+        # XcodeGen writes objectVersion 77, which only Xcode 16 and later can
+        # read, and a runner image's *default* Xcode is often several versions
+        # behind the newest one it has installed.
+        run: |
+          set -euo pipefail
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$NEWEST"
+          xcodebuild -version
 
       - name: Import Developer ID certificate
         env:
