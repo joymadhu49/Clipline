@@ -104,14 +104,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let index = arguments.firstIndex(of: "-selfTestShot") {
-            // Renders each settings section to a PNG in the support folder, so the interface
-            // can be reviewed without a screen recording grant. QA only.
-            let requested = arguments.count > index + 1
-                ? [SettingsSection(rawValue: arguments[index + 1])].compactMap { $0 }
-                : SettingsSection.allCases
-            let sections = requested.isEmpty ? SettingsSection.allCases : requested
+            // Renders the interface to PNGs in the support folder, so it can be reviewed
+            // without a screen recording grant. QA only.
+            //
+            //   -selfTestShot            every settings section
+            //   -selfTestShot privacy    just that section
+            //   -selfTestShot panel      the clipboard panel
+            let target = arguments.count > index + 1 ? arguments[index + 1] : nil
+            let named = target.flatMap { SettingsSection(rawValue: $0) }
+            let sections = named.map { [$0] } ?? SettingsSection.allCases
             Task { @MainActor in
                 let folder = ClipStore.shared.supportDirectory.appendingPathComponent("shots")
+                if target == "panel" {
+                    // The panel is the one part of the interface a screen recording cannot
+                    // reach, since it excludes itself from capture. Ask it to draw itself.
+                    ClipPanelController.shared.show()
+                    try? await Task.sleep(nanoseconds: 900_000_000)
+                    let url = folder.appendingPathComponent("panel.png")
+                    let written = ClipPanelController.shared.writeSnapshot(to: url)
+                    ClipStore.shared.audit("selfTestShot target=panel written=\(written) path=\(url.path)")
+                    return
+                }
                 for section in sections {
                     SettingsWindowController.shared.show(section: section)
                     try? await Task.sleep(nanoseconds: 900_000_000)

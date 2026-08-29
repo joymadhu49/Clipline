@@ -49,12 +49,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// can be looked at without a screen recording grant. QA only.
     func writeSnapshot(to url: URL) -> Bool {
         guard let view = window?.contentView else { return false }
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return false }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        guard let data = rep.representation(using: .png, properties: [:]) else { return false }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
-        return (try? data.write(to: url)) != nil
+        return view.writeSnapshot(to: url)
     }
 
     @objc private func appearanceChanged() {

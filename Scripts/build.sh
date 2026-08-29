@@ -60,6 +60,8 @@ xcodegen generate --quiet
 # native-only build simply refuses to launch on an Intel Mac — which macOS 14 still
 # supports, so an arm64-only DMG would be broken for a slice of the people who
 # download it. UNIVERSAL=0 skips the second slice for a faster local iteration build.
+# Expanded as ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} below: under `set -u`, bash 3.2 — which
+# is what /bin/bash still is on macOS — treats "${empty[@]}" as an unbound variable.
 ARCH_ARGS=()
 if [[ "${UNIVERSAL:-1}" == "1" ]]; then
     ARCH_ARGS=(ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO)
@@ -71,7 +73,7 @@ xcodebuild \
     -scheme "${APP_NAME}" \
     -configuration "$CONFIGURATION" \
     -derivedDataPath "$DERIVED_DATA" \
-    "${ARCH_ARGS[@]}" \
+    ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY="" \

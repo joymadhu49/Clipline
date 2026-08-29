@@ -98,6 +98,16 @@ final class ClipPanelController: NSObject, NSWindowDelegate {
     /// Where the panel actually is. Read by the placement QA hook.
     var panelFrame: NSRect? { panel?.frame }
 
+    /// Renders the panel's content to a PNG from inside the app. The panel opts out of
+    /// screen capture, so a screen recording of it comes back with a hole where the panel
+    /// was; drawing it into a bitmap here is the only way to get a picture of it without
+    /// turning that protection off. The window's shadow and rounded corner mask are drawn
+    /// by the window server, not the view, so they are not in the result.
+    func writeSnapshot(to url: URL) -> Bool {
+        guard let view = panel?.contentView else { return false }
+        return view.writeSnapshot(to: url)
+    }
+
     // MARK: Panel construction
 
     private func makePanel() -> ClipPanel {

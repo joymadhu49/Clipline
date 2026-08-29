@@ -193,11 +193,23 @@ open -a /Applications/Clipline.app --args -selfTestPanelFrame # opens the panel 
                                                              # layout to audit.log
 open -a /Applications/Clipline.app --args -selfTestShot      # renders every settings section
 open -a /Applications/Clipline.app --args -selfTestShot privacy   # or just the one
+open -a /Applications/Clipline.app --args -selfTestShot panel     # the clipboard panel
 ```
 
-`-selfTestShot` writes PNGs to `~/Library/Application Support/Clipline/shots/`. The app draws
-its own window into a bitmap, so it works without a Screen Recording grant, which is the only
-way to review the interface from a terminal that does not have one.
+`-selfTestShot` writes PNGs to `~/Library/Application Support/Clipline/shots/` at 2x. The app
+draws its own view into a bitmap, so it works without a Screen Recording grant, which is the
+only way to review the interface from a terminal that does not have one.
+
+For the panel it is the only way full stop. The panel excludes itself from screen capture, so
+a screen recording of it comes back with a hole where the panel was — `-selfTestShot panel` is
+how you get a picture of it without turning that protection off in Settings > Privacy.
+
+`open -a` hands its arguments to a **new** process. If Clipline is already running, macOS
+activates the existing instance and drops the arguments, so run the binary directly instead:
+
+```sh
+/Applications/Clipline.app/Contents/MacOS/Clipline -selfTestShot panel
+```
 
 Placement is worth checking with that last one after any change to the panel window, because a
 frame that drifts by a few points on each open only shows up as a creep over several launches:
@@ -211,7 +223,7 @@ grep selfTestPanelFrame ~/Library/Application\ Support/Clipline/audit.log | tail
 ```
 Sources/App       main, AppDelegate, menu bar item
 Sources/Core      ClipItem, ClipStore (SQLite), ClipboardMonitor, PasteEngine,
-                  SettingsStore, HotkeyCenter, Shortcut, Theme
+                  SettingsStore, HotkeyCenter, Shortcut, Theme, ViewSnapshot
 Sources/Panel     ClipPanel (NSPanel), PanelModel, ClipPanelView, ClipRowView
 Sources/Settings  SettingsWindow, SettingsView, ShortcutRecorder
 ```
