@@ -713,6 +713,9 @@ struct QuietButton: View {
     let action: () -> Void
 
     @State private var isHovering = false
+    /// A plain button style draws nothing for the disabled state, so without this a button
+    /// that cannot be pressed looked, and lit up on hover, exactly like one that can.
+    @Environment(\.isEnabled) private var isEnabled
 
     init(_ title: String, action: @escaping () -> Void) {
         self.title = title
@@ -723,7 +726,8 @@ struct QuietButton: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(isHovering ? Theme.accent : Theme.secondaryText)
+                .foregroundStyle(isHovering && isEnabled ? Theme.accent : Theme.secondaryText)
+                .opacity(isEnabled ? 1 : 0.45)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
