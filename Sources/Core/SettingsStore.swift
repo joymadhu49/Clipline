@@ -108,7 +108,8 @@ final class SettingsStore: ObservableObject {
 
     // MARK: History
     @Published var historyLimit: Int { didSet { save("historyLimit", historyLimit) } }
-    @Published var retentionDays: Int { didSet { save("retentionDays", retentionDays) } }
+    /// How long an unpinned entry is kept, in hours. Zero keeps it forever.
+    @Published var retentionHours: Int { didSet { save("retentionHours", retentionHours); notifyRetention() } }
     @Published var storeImages: Bool { didSet { save("storeImages", storeImages) } }
     @Published var storeFiles: Bool { didSet { save("storeFiles", storeFiles) } }
     @Published var maxItemMegabytes: Int { didSet { save("maxItemMegabytes", maxItemMegabytes) } }
@@ -157,7 +158,11 @@ final class SettingsStore: ObservableObject {
         monitoringPaused = defaults.object(forKey: "monitoringPaused") as? Bool ?? false
         showMenuBarIcon = defaults.object(forKey: "showMenuBarIcon") as? Bool ?? true
         historyLimit = defaults.object(forKey: "historyLimit") as? Int ?? 500
-        retentionDays = defaults.object(forKey: "retentionDays") as? Int ?? 0
+        // Retention used to be stored in days. Carry an old choice over rather than
+        // quietly resetting it to forever.
+        retentionHours = defaults.object(forKey: "retentionHours") as? Int
+            ?? (defaults.object(forKey: "retentionDays") as? Int).map { $0 * 24 }
+            ?? 0
         storeImages = defaults.object(forKey: "storeImages") as? Bool ?? true
         storeFiles = defaults.object(forKey: "storeFiles") as? Bool ?? true
         maxItemMegabytes = defaults.object(forKey: "maxItemMegabytes") as? Int ?? 8
@@ -290,6 +295,10 @@ final class SettingsStore: ObservableObject {
         NotificationCenter.default.post(name: .clipAppearanceChanged, object: nil)
     }
 
+    private func notifyRetention() {
+        NotificationCenter.default.post(name: .clipRetentionChanged, object: nil)
+    }
+
     private func notifyMenuBar() {
         NotificationCenter.default.post(name: .clipMenuBarChanged, object: nil)
     }
@@ -311,4 +320,5 @@ extension Notification.Name {
     static let clipMonitorSettingsChanged = Notification.Name("com.joymadhu.Clipline.monitorSettingsChanged")
     static let clipAppearanceChanged = Notification.Name("com.joymadhu.Clipline.appearanceChanged")
     static let clipMenuBarChanged = Notification.Name("com.joymadhu.Clipline.menuBarChanged")
+    static let clipRetentionChanged = Notification.Name("com.joymadhu.Clipline.retentionChanged")
 }

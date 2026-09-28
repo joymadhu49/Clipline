@@ -59,6 +59,18 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST"
 
+          # Sparkle: the framework is embedded, the XPC services a non-sandboxed app does
+          # not use are gone, and the feed and key are set. Sparkle compares
+          # CFBundleVersion, so it has to move with the marketing version or no release
+          # would ever look newer than the one installed.
+          test -d "$APP/Contents/Frameworks/Sparkle.framework"
+          test ! -e "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
+          /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")" = \
+               "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          codesign --verify --deep --strict "$APP"
+
       - name: Verify the icon renders from source
         run: |
           set -euo pipefail

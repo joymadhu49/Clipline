@@ -92,6 +92,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         settings.target = self
         menu.addItem(settings)
 
+        let updates = NSMenuItem(title: "Check for Updates…",
+                                 action: #selector(UpdateController.checkForUpdates), keyEquivalent: "")
+        updates.target = UpdateController.shared
+        menu.addItem(updates)
+
         let quit = NSMenuItem(title: "Quit Clipline", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)

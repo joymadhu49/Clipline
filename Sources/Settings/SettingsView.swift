@@ -266,7 +266,11 @@ private struct HistorySettings: View {
     @State private var cleaning = false
 
     private let limits = [100, 250, 500, 1000, 2500]
-    private let retentions: [(Int, String)] = [(0, "Forever"), (7, "7 days"), (30, "30 days"), (90, "90 days")]
+    /// In hours.
+    private let retentions: [(Int, String)] = [
+        (0, "Forever"), (3, "3 hours"), (5, "5 hours"), (24, "1 day"),
+        (7 * 24, "7 days"), (30 * 24, "30 days"), (90 * 24, "90 days")
+    ]
     private let sizes = [2, 4, 8, 16, 32]
 
     var body: some View {
@@ -281,8 +285,8 @@ private struct HistorySettings: View {
                     .fixedSize()
                 }
                 SettingsRow(title: "Keep entries for",
-                            subtitle: "Anything older is cleaned up on the next capture") {
-                    Picker("", selection: $settings.retentionDays) {
+                            subtitle: "Anything older is removed automatically. Pinned entries always stay.") {
+                    Picker("", selection: $settings.retentionHours) {
                         ForEach(retentions, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     .labelsHidden()
@@ -315,11 +319,11 @@ private struct HistorySettings: View {
                             subtitle: "Applies your limits and reclaims space right away") {
                     QuietButton(cleaning ? "Working" : "Clean up") {
                         let limit = settings.historyLimit
-                        let days = settings.retentionDays
+                        let hours = settings.retentionHours
                         cleaning = true
                         ThumbnailCache.shared.clear()
                         DispatchQueue.global(qos: .userInitiated).async {
-                            ClipStore.shared.trimNow(historyLimit: limit, retentionDays: days)
+                            ClipStore.shared.trimNow(historyLimit: limit, retentionHours: hours)
                             ClipStore.shared.compact()
                             DispatchQueue.main.async {
                                 cleaning = false
@@ -553,6 +557,8 @@ private struct PrivacySettings: View {
 // MARK: About
 
 private struct AboutSettings: View {
+    @ObservedObject private var updates = UpdateController.shared
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SettingsCard {
@@ -576,8 +582,18 @@ private struct AboutSettings: View {
                 .padding(12)
             }
 
+            SettingsGroup("Updates") {
+                SettingsToggle(title: "Check for updates automatically",
+                               subtitle: "Once a day, from GitHub. Updates are signed and verified before they install.",
+                               isOn: $updates.automaticallyChecks)
+                SettingsRow(title: "Check now", subtitle: lastCheckText) {
+                    QuietButton("Check for Updates") { updates.checkForUpdates() }
+                        .disabled(!updates.canCheckForUpdates)
+                }
+            }
+
             SettingsGroup("How it behaves") {
-                aboutRow("Local only", "History lives in your Application Support folder. Nothing is uploaded.")
+                aboutRow("Local only", "History lives in your Application Support folder and is never uploaded. The only thing Clipline asks the internet for is whether a new version exists.")
                 aboutRow("Light on memory", "Rows hold a short preview. Full text and images are read from disk only when you look at them.")
                 aboutRow("Light on disk", "Duplicates fold into one entry, large copies are skipped, and old entries are trimmed automatically.")
             }
@@ -590,6 +606,16 @@ private struct AboutSettings: View {
                     .buttonStyle(GhostButtonStyle(tint: Theme.danger))
             }
         }
+    }
+
+    private var lastCheckText: String {
+        guard let last = updates.lastCheck else { return "Not checked yet" }
+        // Sparkle stamps the date on first launch, a moment before the view reads it, and
+        // the formatter would then say "in 0 seconds".
+        guard Date().timeIntervalSince(last) >= 60 else { return "Last checked just now" }
+        let relative = RelativeDateTimeFormatter()
+        relative.unitsStyle = .full
+        return "Last checked \(relative.localizedString(for: last, relativeTo: Date()))"
     }
 
     private func aboutRow(_ title: String, _ subtitle: String) -> some View {

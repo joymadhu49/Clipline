@@ -2,6 +2,7 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var firstLaunch = false
+    private var housekeepingTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         firstLaunch = !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
@@ -34,13 +35,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.global(qos: .utility).async { ClipStore.shared.checkpoint() }
         }
 
-        // Housekeeping on launch so a long pause between sessions cannot leave stale rows.
-        // The limits are read here on main and handed over as plain values.
-        let historyLimit = SettingsStore.shared.historyLimit
-        let retentionDays = SettingsStore.shared.retentionDays
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
-            ClipStore.shared.trimNow(historyLimit: historyLimit, retentionDays: retentionDays)
+        // Housekeeping on launch so a long pause between sessions cannot leave stale rows,
+        // again whenever the retention window changes, and then every few minutes. With a
+        // window measured in hours, waiting for the next capture could leave an entry on
+        // screen well past its time on a quiet afternoon.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.sweepExpired() }
+        NotificationCenter.default.addObserver(forName: .clipRetentionChanged,
+                                               object: nil, queue: .main) { [weak self] _ in
+            self?.sweepExpired()
         }
+        housekeepingTimer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
+            self?.sweepExpired()
+        }
+        housekeepingTimer?.tolerance = 60
+
+        UpdateController.shared.start()
 
         // QA hooks: open a surface straight away without needing the global shortcut.
         let arguments = CommandLine.arguments
@@ -167,6 +176,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Applies the history limit and the retention window off the main thread. The limits
+    /// are read here on main and handed over as plain values.
+    private func sweepExpired() {
+        let historyLimit = SettingsStore.shared.historyLimit
+        let retentionHours = SettingsStore.shared.retentionHours
+        DispatchQueue.global(qos: .utility).async {
+            ClipStore.shared.trimNow(historyLimit: historyLimit, retentionHours: retentionHours)
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         if SettingsStore.shared.clearOnQuit {
             // No VACUUM here. Quit has to be quick, and the next cleanup reclaims the space.
@@ -183,12 +202,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Text fields get their editing keys from the main menu, so the search field needs one
     /// even though Clipline normally runs without a menu bar of its own.
+    @MainActor
     private func buildMainMenu() {
         let mainMenu = NSMenu()
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Clipline", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let updatesItem = NSMenuItem(title: "Check for Updates…",
+                                     action: #selector(UpdateController.checkForUpdates), keyEquivalent: "")
+        updatesItem.target = UpdateController.shared
+        appMenu.addItem(updatesItem)
         appMenu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self

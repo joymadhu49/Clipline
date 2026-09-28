@@ -93,6 +93,28 @@ cp -R "$BUILT" "$APP_DIR"
 # Quarantine and resource-fork xattrs make codesign fail on some machines.
 xattr -cr "$APP_DIR" 2>/dev/null || true
 
+# Sparkle arrives from Swift Package Manager ad-hoc signed. Under the hardened runtime,
+# library validation refuses to load a framework that is not signed by the same team as
+# the app, and the notary service rejects any nested code without a Developer ID and a
+# secure timestamp. So every piece of it is signed again here, innermost first, with the
+# same identity as the app — `--deep` is not used because it signs in the wrong order.
+#
+# The two XPC services are dropped first. Sparkle only uses them for a sandboxed app,
+# which Clipline is not (see ENTITLEMENTS above), and code that is not shipped is code
+# that never needs signing.
+SPARKLE="${APP_DIR}/Contents/Frameworks/Sparkle.framework"
+if [[ -d "$SPARKLE" ]]; then
+    rm -rf "$SPARKLE/Versions/B/XPCServices" "$SPARKLE/XPCServices"
+fi
+
+sign_sparkle() {
+    [[ -d "$SPARKLE" ]] || return 0
+    local flags=("$@")
+    codesign "${flags[@]}" "$SPARKLE/Versions/B/Autoupdate"
+    codesign "${flags[@]}" "$SPARKLE/Versions/B/Updater.app"
+    codesign "${flags[@]}" "$SPARKLE"
+}
+
 have_developer_id() {
     security find-identity -v -p codesigning 2>/dev/null |
         grep -q "Developer ID Application"
@@ -118,6 +140,7 @@ case "$SIGNING_IDENTITY" in
         exit 1
     fi
     echo "==> Signing with '$SIGNING_IDENTITY' (hardened runtime + secure timestamp, notarization-ready)"
+    sign_sparkle --force --options runtime --timestamp --sign "$SIGNING_IDENTITY"
     codesign --force --options runtime --timestamp \
         --entitlements "$ENTITLEMENTS" \
         --sign "$SIGNING_IDENTITY" "$APP_DIR"
@@ -125,6 +148,7 @@ case "$SIGNING_IDENTITY" in
     ;;
   *)
     echo "==> Ad-hoc signing (compile check only — not distributable)"
+    sign_sparkle --force --sign -
     codesign --force --sign - "$APP_DIR"
     ;;
 esac

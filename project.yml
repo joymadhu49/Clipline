@@ -6,7 +6,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    MARKETING_VERSION: 1.0.0
+    MARKETING_VERSION: 1.1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: CJZMYQN8V6
@@ -17,10 +17,18 @@ settings:
     SWIFT_STRICT_CONCURRENCY: minimal
     DEAD_CODE_STRIPPING: YES
     SWIFT_OPTIMIZATION_LEVEL: "-O"
+packages:
+  # Auto-updates. Pinned exactly: the generated project is not committed, so there is no
+  # Package.resolved to hold the version still between CI runs.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
 targets:
   Clipline:
     type: application
     platform: macOS
+    dependencies:
+      - package: Sparkle
     sources:
       - Sources
       # Referenced as a file, not a folder. A folder reference copies the folder itself, so
@@ -34,10 +42,21 @@ targets:
         CFBundleDisplayName: Clipline
         CFBundleIdentifier: com.joymadhu.Clipline
         CFBundleShortVersionString: $(MARKETING_VERSION)
-        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Sparkle decides "is this newer" on CFBundleVersion, so it follows the marketing
+        # version. A fixed build number would make every release look like the same build.
+        CFBundleVersion: $(MARKETING_VERSION)
         CFBundleIconFile: AppIcon
         LSUIElement: true
         LSMinimumSystemVersion: "14.0"
         NSHumanReadableCopyright: Copyright 2026 Joy Madhu. All rights reserved.
         NSSupportsAutomaticTermination: false
         NSSupportsSuddenTermination: false
+        # Sparkle. The feed is the appcast.xml attached to whichever release is newest,
+        # so publishing a release is what publishes the update. Archives are verified
+        # against this EdDSA key; its private half lives in the SPARKLE_ED_PRIVATE_KEY
+        # secret and the maintainer's login keychain.
+        SUFeedURL: https://github.com/joymadhu49/Clipline/releases/latest/download/appcast.xml
+        SUPublicEDKey: ajoIDYdrCj59w5c+p+BO7MKoJ8JmwOAeoxDt/YrwuKA=
+        SUEnableAutomaticChecks: true
+        SUScheduledCheckInterval: 86400
+        SUEnableSystemProfiling: false

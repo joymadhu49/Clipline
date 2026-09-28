@@ -8,7 +8,7 @@
   <img src="Resources/AppIcon.png" width="160" alt="Clipline icon" />
 </p>
 
-A native macOS clipboard manager. Clipboard history, pinned entries, instant search, and a popup panel on a global shortcut. Written in Swift with no third party dependencies, and built to stay small in both memory and disk.
+A native macOS clipboard manager. Clipboard history, pinned entries, instant search, and a popup panel on a global shortcut. Written in Swift on the system frameworks plus [Sparkle](https://sparkle-project.org) for updates, and built to stay small in both memory and disk.
 
 Installed at `/Applications/Clipline.app`. Runs in the menu bar with no Dock icon.
 
@@ -24,6 +24,7 @@ Installed at `/Applications/Clipline.app`. Runs in the menu bar with no Dock ico
 - **Hard to lose things.** Pinned entries cannot be deleted until you unpin them, and every deletion is written to an audit log.
 - **Safe on a shared screen.** The panel is invisible to screen recording, streaming and screen sharing (Settings > Privacy, on by default) — you see it, viewers never do. On top of that, any entry can be masked with ⌘H: it keeps pasting as normal, but the list shows a name you give it ("Email", "Password") or dots instead of the content, with no thumbnail, source app or size to give it away.
 - **Paste back.** Return pastes the selected entry into the app you were just in. Option Return pastes it without formatting, Command Return copies without pasting.
+- **Keeps itself current.** New versions arrive through [Sparkle](https://sparkle-project.org): Clipline checks GitHub once a day, and each update is verified against an EdDSA signature and Apple's notarization before it installs. Settings > About turns the daily check off, and the menu bar menu has Check for Updates… for when you want it now.
 - **Settings.** A full settings window covering behaviour, shortcuts, history limits, appearance and privacy. Named groups, one rule in the whole window, and each group's action in its own heading rather than floating in the gap below it.
 
 ## Install
@@ -83,14 +84,14 @@ Drag the header to move it, drag any edge to resize it. The panel then keeps tha
 
 Pasting into another app needs **Accessibility** access, because Clipline presses Command V on your behalf. macOS asks on first launch. If you skipped it, Settings > General has a button that opens the right pane in System Settings, and the panel shows a reminder bar until it is granted. Without it Clipline still copies to the clipboard, you just press Command V yourself.
 
-No other permission is needed. Nothing leaves the machine.
+No other permission is needed. Your clipboard never leaves the machine; the only network request Clipline makes is the daily update check to GitHub, which carries no clipboard data and no system profile.
 
 ## How it stays small
 
 - **Memory.** List rows hold only a short preview and metadata. Full text, images and file lists are read from disk only for the entry you are actually looking at. Image previews are decoded at display size through `CGImageSourceCreateThumbnailAtIndex`, never at full resolution. The thumbnail cache is capped by count and cost and is emptied whenever you switch away from Clipline. Measured footprint in normal use is around 27 MB.
 - **Disk.** Text over 32 KB, images and file lists live as files in the support folder, so the database itself stays tiny. Screenshots are re encoded from TIFF to PNG on capture. Duplicate copies never create a second row. The write ahead log is capped and checkpointed whenever the app goes idle.
 - **CPU.** The poll timer reads a change counter and nothing else. Pasteboard contents are only touched when that counter moves, and hashing, thumbnailing and disk writes happen off the main thread. The timer carries a wide tolerance so the system can coalesce it with other work. Detection speed is configurable from 0.15 up to 1.5 seconds.
-- **Growth.** A history limit (500 entries by default), an optional retention window, and a size ceiling for a single entry (8 MB by default). Trimming deletes the stored files along with the row, and there is a cleanup pass that also removes any file no row points at.
+- **Growth.** A history limit (500 entries by default), an optional retention window from 3 hours to 90 days, and a size ceiling for a single entry (8 MB by default). Trimming deletes the stored files along with the row, runs on every capture and every few minutes in between, so a short window is honoured even while nothing is being copied, and there is a cleanup pass that also removes any file no row points at.
 
 Everything lives in `~/Library/Application Support/Clipline`: `clipline.db`, `blobs/`, `thumbs/` and `audit.log`.
 
@@ -106,8 +107,8 @@ Deleting an entry removes the row and its stored files straight away, so the spa
 
 ## Build
 
-Requires Xcode and XcodeGen (`brew install xcodegen`). No other dependencies: Clipline
-pulls in nothing but the system frameworks.
+Requires Xcode and XcodeGen (`brew install xcodegen`). The one package, Sparkle, is
+pinned in `project.yml` and fetched by Swift Package Manager during the build.
 
 ```sh
 git clone https://github.com/joymadhu49/Clipline.git
@@ -144,10 +145,10 @@ bash Scripts/make-icon.sh      # -> Resources/AppIcon.icns and AppIcon.png
 `project.yml`'s `MARKETING_VERSION` is the single source of truth for the version;
 `Info.plist` picks it up through `$(MARKETING_VERSION)`. Bump it, merge to `main`, and
 the release workflow does the rest: build, sign, DMG, notarize with Apple, tag, and a
-GitHub Release with the DMG attached. A push to `main` without a version bump releases
+GitHub Release with the DMG and a signed `appcast.xml` attached. A push to `main` without a version bump releases
 nothing, so the bump is the only human step. Pushing a `v*` tag by hand still works too.
 
-That needs six repository secrets under Settings → Secrets and variables → Actions:
+That needs seven repository secrets under Settings → Secrets and variables → Actions:
 
 | Secret | What it is |
 | --- | --- |
@@ -157,6 +158,7 @@ That needs six repository secrets under Settings → Secrets and variables → A
 | `AC_API_KEY_P8` | base64 of the App Store Connect API key `.p8` |
 | `AC_API_KEY_ID` | that key's ID |
 | `AC_API_ISSUER_ID` | that key's issuer ID |
+| `SPARKLE_ED_PRIVATE_KEY` | Sparkle's EdDSA private key, exported with `generate_keys -x` |
 
 Base64 a file with `base64 -i Certificates.p12 | pbcopy`. The App Store Connect key comes
 from Users and Access → Integrations → Keys, role Developer or higher, and downloads
@@ -170,7 +172,18 @@ bash Scripts/build.sh                        # universal, Developer ID signed
 bash Scripts/notarize.sh build/Clipline.app  # ticket stapled to the app
 bash Scripts/make-dmg.sh                     # -> build/Clipline-<version>.dmg
 bash Scripts/notarize.sh                     # ticket stapled to the DMG
+bash Scripts/make-appcast.sh                 # -> build/appcast.xml, signed from the keychain
 ```
+
+**Updates.** The app's `SUFeedURL` is `releases/latest/download/appcast.xml`, which GitHub
+redirects to whichever release is newest, so publishing a release is what ships the
+update; there is no separate feed to keep in step. `CFBundleVersion` follows
+`MARKETING_VERSION` because that is the number Sparkle compares. The EdDSA public key is
+`SUPublicEDKey` in `project.yml`; the private half is in the maintainer's login keychain
+and the `SPARKLE_ED_PRIVATE_KEY` secret. Keep a backup (`generate_keys -x`): without it,
+installed copies will refuse every future update. `build.sh` re-signs Sparkle's nested
+code with the app's own Developer ID, innermost first, and drops the two XPC services
+Sparkle only needs inside a sandbox.
 
 Notarization runs twice on purpose. The DMG's ticket is what Gatekeeper reads when
 someone opens the download, but an app dragged out of a DMG that was notarized alone
@@ -221,7 +234,7 @@ grep selfTestPanelFrame ~/Library/Application\ Support/Clipline/audit.log | tail
 ## Layout
 
 ```
-Sources/App       main, AppDelegate, menu bar item
+Sources/App       main, AppDelegate, menu bar item, UpdateController (Sparkle)
 Sources/Core      ClipItem, ClipStore (SQLite), ClipboardMonitor, PasteEngine,
                   SettingsStore, HotkeyCenter, Shortcut, Theme, ViewSnapshot
 Sources/Panel     ClipPanel (NSPanel), PanelModel, ClipPanelView, ClipRowView

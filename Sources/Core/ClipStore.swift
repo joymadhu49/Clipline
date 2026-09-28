@@ -137,7 +137,7 @@ final class ClipStore {
     /// Stores a captured payload, folding duplicates into the existing row.
     /// Returns the row id of the stored or refreshed item.
     @discardableResult
-    func insert(_ payload: CapturedPayload, historyLimit: Int, retentionDays: Int) -> Int64? {
+    func insert(_ payload: CapturedPayload, historyLimit: Int, retentionHours: Int) -> Int64? {
         let id: Int64? = queue.sync {
             guard db != nil else { return nil }
             let now = Date().timeIntervalSince1970
@@ -154,7 +154,7 @@ final class ClipStore {
                     sqlite3_finalize(statement)
                 }
                 // Duplicates still count as activity, so the retention window is applied here too.
-                trim(historyLimit: historyLimit, retentionDays: retentionDays)
+                trim(historyLimit: historyLimit, retentionHours: retentionHours)
                 return existing
             }
 
@@ -226,7 +226,7 @@ final class ClipStore {
                 return nil
             }
             let newID = sqlite3_last_insert_rowid(db)
-            trim(historyLimit: historyLimit, retentionDays: retentionDays)
+            trim(historyLimit: historyLimit, retentionHours: retentionHours)
             return newID
         }
         if id != nil { announceChange() }
@@ -332,9 +332,9 @@ final class ClipStore {
     }
 
     /// Applies the history limit and the retention window, deleting orphaned files.
-    func trimNow(historyLimit: Int, retentionDays: Int) {
-        queue.sync { trim(historyLimit: historyLimit, retentionDays: retentionDays) }
-        announceChange()
+    func trimNow(historyLimit: Int, retentionHours: Int) {
+        let removed = queue.sync { trim(historyLimit: historyLimit, retentionHours: retentionHours) }
+        if removed > 0 { announceChange() }
     }
 
     func compact() {
@@ -552,7 +552,9 @@ final class ClipStore {
     }
 
     /// Caller must already be on the store queue.
-    private func trim(historyLimit: Int, retentionDays: Int) {
+    /// Returns how many rows were removed.
+    @discardableResult
+    private func trim(historyLimit: Int, retentionHours: Int) -> Int {
         var doomed: [Int64] = []
         if historyLimit > 0,
            let statement = prepare("""
@@ -563,18 +565,21 @@ final class ClipStore {
             while sqlite3_step(statement) == SQLITE_ROW { doomed.append(sqlite3_column_int64(statement, 0)) }
             sqlite3_finalize(statement)
         }
-        if retentionDays > 0,
+        if retentionHours > 0,
            let statement = prepare("SELECT id FROM items WHERE pinned = 0 AND copied_at < ?;") {
-            let cutoff = Date().timeIntervalSince1970 - Double(retentionDays) * 86_400
+            let cutoff = Date().timeIntervalSince1970 - Double(retentionHours) * 3_600
             sqlite3_bind_double(statement, 1, cutoff)
             while sqlite3_step(statement) == SQLITE_ROW { doomed.append(sqlite3_column_int64(statement, 0)) }
             sqlite3_finalize(statement)
         }
-        guard !doomed.isEmpty else { return }
-        audit("trim removing \(doomed.count) rows limit=\(historyLimit) retention=\(retentionDays) caller=\(Self.callerHint())")
+        // A row can be both over the limit and past the window.
+        doomed = Array(Set(doomed))
+        guard !doomed.isEmpty else { return 0 }
+        audit("trim removing \(doomed.count) rows limit=\(historyLimit) retentionHours=\(retentionHours) caller=\(Self.callerHint())")
         removeFiles(forIDs: doomed)
         let list = doomed.map(String.init).joined(separator: ",")
         exec("DELETE FROM items WHERE id IN (\(list));")
+        return doomed.count
     }
 
     /// Caller must already be on the store queue.

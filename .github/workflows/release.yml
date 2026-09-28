@@ -18,6 +18,8 @@ name: Release (signed + notarized)
 #   AC_API_KEY_P8                base64 of the App Store Connect API key (.p8)
 #   AC_API_KEY_ID                the API Key ID
 #   AC_API_ISSUER_ID             the API Issuer ID
+#   SPARKLE_ED_PRIVATE_KEY       Sparkle's EdDSA private key (generate_keys -x), which
+#                                signs the DMG so installed copies accept the update
 #
 # Create the base64 secrets with:  base64 -i Certificates.p12 | pbcopy
 
@@ -82,7 +84,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release due: ${TAG:-no}"
 
-      # All six are needed, and they are needed at different points: a missing
+      # All seven are needed, and they are needed at different points: a missing
       # notary key ID is only discovered after a full macOS build and a DMG have
       # already been paid for. Check the lot up front and leave the run green
       # rather than failing every push to main until they are added.
@@ -95,23 +97,24 @@ jobs:
           AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
           AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
           AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           MISSING=()
           for name in DEVELOPER_ID_CERT_P12 DEVELOPER_ID_CERT_PASSWORD KEYCHAIN_PASSWORD \
-                      AC_API_KEY_P8 AC_API_KEY_ID AC_API_ISSUER_ID; do
+                      AC_API_KEY_P8 AC_API_KEY_ID AC_API_ISSUER_ID SPARKLE_ED_PRIVATE_KEY; do
             [[ -n "${!name:-}" ]] || MISSING+=("$name")
           done
 
           if [[ ${#MISSING[@]} -eq 0 ]]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "All six signing secrets present."
+            echo "All seven signing secrets present."
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
             {
               echo "### No release cut"
               echo
-              echo "Skipped the build: ${#MISSING[@]} of 6 signing secrets are missing."
+              echo "Skipped the build: ${#MISSING[@]} of 7 signing secrets are missing."
               echo
               for name in "${MISSING[@]}"; do echo "- \`$name\`"; done
               echo
@@ -200,6 +203,14 @@ jobs:
           AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
         run: bash Scripts/notarize.sh
 
+      # Last, because stapling rewrote the DMG: the Sparkle signature has to cover the
+      # exact bytes people download. The appcast rides along as a release asset, and
+      # the app's feed URL follows releases/latest, so this release becomes the update.
+      - name: Sign the update and write the appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: bash Scripts/make-appcast.sh
+
       # Creates the tag (when it doesn't exist yet) and the GitHub Release, and
       # attaches the DMG. GITHUB_TOKEN-created tags don't re-trigger workflows,
       # so the auto flow can't recurse.
@@ -209,5 +220,7 @@ jobs:
           tag_name: ${{ needs.check.outputs.tag }}
           target_commitish: ${{ inputs.target_commitish || github.sha }}
           generate_release_notes: true
-          files: build/Clipline-*.dmg
+          files: |
+            build/Clipline-*.dmg
+            build/appcast.xml
           fail_on_unmatched_files: true

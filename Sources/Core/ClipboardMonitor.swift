@@ -114,7 +114,7 @@ final class ClipboardMonitor {
         // Snapshot the settings we need. They are observable state owned by the main thread.
         let limit = settings.maxItemBytes
         let historyLimit = settings.historyLimit
-        let retentionDays = settings.retentionDays
+        let retentionHours = settings.retentionHours
 
         guard let raw = readRawPasteboard(storeFiles: settings.storeFiles,
                                           storeImages: settings.storeImages,
@@ -135,7 +135,7 @@ final class ClipboardMonitor {
             }
             let id = ClipStore.shared.insert(payload,
                                              historyLimit: historyLimit,
-                                             retentionDays: retentionDays)
+                                             retentionHours: retentionHours)
             if let completion { DispatchQueue.main.async { completion(id) } }
         }
     }
