@@ -29,6 +29,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.orderFrontRegardless()
     }
 
+    var isShowing: Bool { window?.isVisible == true }
+
     private func makeWindow() -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 560),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

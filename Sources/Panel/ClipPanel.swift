@@ -61,7 +61,10 @@ final class ClipPanelController: NSObject, NSWindowDelegate {
         place(frame, on: panel, display: false)
 
         panel.alphaValue = 0
-        NSApp.activate(ignoringOtherApps: true)
+        // No NSApp.activate here. The panel is non-activating, so it takes the keyboard
+        // while the app the user is in stays active. Activating Clipline would pull every
+        // one of its windows forward with it, so an open Settings window jumped out from
+        // behind whatever the user was working in each time the shortcut was pressed.
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         // Laying out the content can nudge the frame, so restate the frame we actually want.
@@ -87,8 +90,11 @@ final class ClipPanelController: NSObject, NSWindowDelegate {
         isVisible = false
         removeKeyMonitor()
         panel.orderOut(nil)
-        if restoringFocus {
-            // Handing activation back keeps the app the user was in in front.
+        // Normally the app the user was in never lost activation, and it simply gets the
+        // keyboard back. Clipline is only active here if a dialog or the Settings window
+        // made it so. Hiding the app then hands activation back, but it would also hide
+        // Settings, so while Settings is open it keeps the focus instead.
+        if restoringFocus, NSApp.isActive, !SettingsWindowController.shared.isShowing {
             NSApp.hide(nil)
         }
     }
