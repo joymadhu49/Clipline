@@ -334,28 +334,38 @@ struct ClipPanelView: View {
             .disabled(item.pinned)
     }
 
-    /// Drag payloads. Images offer both the file on disk and the raw bytes, so a drop lands
-    /// whether the target wants a file (Finder, Mail) or image data (Pages, Figma).
+    /// Drag payloads. Images offer both a file and the raw bytes, so a drop lands whether
+    /// the target wants a file (Finder, Mail) or image data (Pages, Figma).
     private func dragProvider(for item: ClipItem) -> NSItemProvider {
         switch item.kind {
         case .image:
-            guard let url = ClipStore.shared.blobURL(id: item.id) else {
+            guard let blob = ClipStore.shared.blobData(id: item.id) else {
                 return NSItemProvider(object: item.preview as NSString)
             }
-            let type = url.pathExtension == "tiff" ? UTType.tiff : UTType.png
+            let type = blob.pathExtension == "tiff" ? UTType.tiff : UTType.png
             let provider = NSItemProvider()
-            provider.suggestedName = "Clipline image." + url.pathExtension
+            provider.suggestedName = "Clipline image." + blob.pathExtension
             provider.registerFileRepresentation(forTypeIdentifier: type.identifier,
                                                 fileOptions: [],
                                                 visibility: .all) { completion in
-                completion(url, true, nil)
+                // The stored file is sealed, so the drop gets a decrypted copy. It is not
+                // opened in place, which lets the receiver copy it before the folder is
+                // emptied on the next launch.
+                let folder = ClipStore.shared.dragDirectory
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                         attributes: [.posixPermissions: 0o700])
+                let url = folder.appendingPathComponent(UUID().uuidString + "." + blob.pathExtension)
+                do {
+                    try blob.data.write(to: url, options: .atomic)
+                    completion(url, false, nil)
+                } catch {
+                    completion(nil, false, error)
+                }
                 return nil
             }
             provider.registerDataRepresentation(forTypeIdentifier: type.identifier,
                                                 visibility: .all) { completion in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    completion(try? Data(contentsOf: url), nil)
-                }
+                completion(blob.data, nil)
                 return nil
             }
             return provider

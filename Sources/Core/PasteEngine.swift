@@ -44,9 +44,8 @@ final class PasteEngine {
     private func payload(for item: ClipItem, plainText: Bool) -> Payload? {
         switch item.kind {
         case .image:
-            guard let url = ClipStore.shared.blobURL(id: item.id),
-                  let data = try? Data(contentsOf: url) else { return nil }
-            return .image(data, url.pathExtension == "tiff" ? .tiff : .png)
+            guard let blob = ClipStore.shared.blobData(id: item.id) else { return nil }
+            return .image(blob.data, blob.pathExtension == "tiff" ? .tiff : .png)
 
         case .file:
             let urls = ClipStore.shared.filePaths(id: item.id)

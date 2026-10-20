@@ -65,12 +65,17 @@ final class ClipStore {
             let fm = FileManager.default
             for directory in [supportDirectory, blobsDirectory, thumbsDirectory] {
                 try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+                // Owner only. The contents are sealed anyway; this keeps other accounts on
+                // the Mac from even listing them.
+                try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
             }
             guard sqlite3_open_v2(databaseURL.path, &db,
                                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
                 NSLog("Clipline: could not open database at %@", databaseURL.path)
                 return
             }
+            // Freed pages are zeroed, so a deleted entry's ciphertext does not linger either.
+            exec("PRAGMA secure_delete = ON;")
             exec("PRAGMA journal_mode = WAL;")
             exec("PRAGMA synchronous = NORMAL;")
             exec("PRAGMA temp_store = MEMORY;")
@@ -110,7 +115,115 @@ final class ClipStore {
             exec("CREATE INDEX IF NOT EXISTS idx_items_copied ON items(copied_at DESC);")
             exec("CREATE INDEX IF NOT EXISTS idx_items_hash ON items(hash);")
             exec("CREATE INDEX IF NOT EXISTS idx_items_pinned ON items(pinned, pin_order);")
+            prepareEncryption()
         }
+    }
+
+    // MARK: Encryption
+
+    /// Schema version stored in PRAGMA user_version. 0 is a plain text history from a build
+    /// before encryption, 1 is fully sealed.
+    private static let encryptedSchemaVersion: Int32 = 1
+
+    /// Caller must already be on the store queue.
+    private func prepareEncryption() {
+        let vault = ClipVault.shared
+        let version = userVersion()
+        if version >= Self.encryptedSchemaVersion {
+            // A sealed history with a brand new key means the old key is gone, and nothing
+            // stored under it can be opened again. Start clean instead of showing blanks.
+            if vault.isNewKey {
+                audit("storage key missing, discarding unreadable history")
+                exec("DELETE FROM items;")
+                for directory in [blobsDirectory, thumbsDirectory] {
+                    let contents = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+                    contents.forEach { try? FileManager.default.removeItem(at: $0) }
+                }
+                exec("VACUUM;")
+            }
+            return
+        }
+        migrateToEncrypted()
+    }
+
+    /// Seals every row and file written by a build before encryption, then rewrites the
+    /// database so no plain text page survives in the file or its write ahead log.
+    /// Caller must already be on the store queue.
+    private func migrateToEncrypted() {
+        let vault = ClipVault.shared
+        struct Row { var id: Int64; var values: [String?] }
+        var rows: [Row] = []
+        let sql = "SELECT id, hash, preview, search_text, body, source_name, source_bundle, label FROM items;"
+        if let statement = prepare(sql) {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                var values: [String?] = []
+                for index in 1...7 {
+                    values.append(sqlite3_column_text(statement, Int32(index)).map { String(cString: $0) })
+                }
+                rows.append(Row(id: sqlite3_column_int64(statement, 0), values: values))
+            }
+            sqlite3_finalize(statement)
+        }
+
+        // Files first, every one in the folders and not only those a row points at: earlier
+        // builds left files behind after a delete, and those hold clipboard content too.
+        // Sealing rather than deleting keeps an update from losing anything. Each file is
+        // sealed in place; a crash midway leaves a mix the reader already copes with, since
+        // unsealed data passes through.
+        let fm = FileManager.default
+        for directory in [blobsDirectory, thumbsDirectory] {
+            let contents = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            for url in contents {
+                guard let data = try? Data(contentsOf: url), !ClipVault.isSealed(data),
+                      let sealed = vault.seal(data) else { continue }
+                try? sealed.write(to: url, options: .atomic)
+            }
+        }
+
+        exec("BEGIN IMMEDIATE;")
+        let update = """
+        UPDATE items SET hash = ?, preview = ?, search_text = ?, body = ?, source_name = ?,
+                         source_bundle = ?, label = ? WHERE id = ?;
+        """
+        for row in rows {
+            guard let statement = prepare(update) else { continue }
+            let hash = row.values[0] ?? ""
+            bindText(statement, 1, hash.hasPrefix("h1:") ? hash : vault.tag(hash))
+            for index in 1..<7 {
+                let value = row.values[index]
+                let sealed = value.map { ClipVault.isSealedText($0) ? $0 : vault.sealText($0) }
+                bindOptionalText(statement, Int32(index + 1), sealed)
+            }
+            sqlite3_bind_int64(statement, 8, row.id)
+            sqlite3_step(statement)
+            sqlite3_finalize(statement)
+        }
+        exec("PRAGMA user_version = \(Self.encryptedSchemaVersion);")
+        exec("COMMIT;")
+
+        // The old plain text still sits in freed pages and in the write ahead log until the
+        // log is folded back and the file rebuilt.
+        sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
+        exec("VACUUM;")
+        sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
+        audit("encrypted \(rows.count) existing entries")
+    }
+
+    private func userVersion() -> Int32 {
+        guard let statement = prepare("PRAGMA user_version;") else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0
+    }
+
+    /// Writes a stored file sealed. Caller must already be on the store queue.
+    private func writeSealed(_ data: Data, to url: URL) -> Bool {
+        guard let sealed = ClipVault.shared.seal(data) else { return false }
+        return (try? sealed.write(to: url, options: .atomic)) != nil
+    }
+
+    private func readSealed(at url: URL) -> Data? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return ClipVault.shared.open(data)
     }
 
     func close() {
@@ -141,14 +254,16 @@ final class ClipStore {
         let id: Int64? = queue.sync {
             guard db != nil else { return nil }
             let now = Date().timeIntervalSince1970
+            let vault = ClipVault.shared
+            let hash = vault.tag(payload.hash)
 
             // Fold duplicates: refresh the existing row instead of growing the history.
-            if let existing = firstID(matchingHash: payload.hash) {
+            if let existing = firstID(matchingHash: hash) {
                 let sql = "UPDATE items SET copied_at = ?, use_count = use_count + 1, source_name = ?, source_bundle = ? WHERE id = ?;"
                 if let statement = prepare(sql) {
                     sqlite3_bind_double(statement, 1, now)
-                    bindText(statement, 2, payload.sourceName)
-                    bindText(statement, 3, payload.sourceBundle)
+                    bindText(statement, 2, vault.sealText(payload.sourceName))
+                    bindText(statement, 3, vault.sealText(payload.sourceBundle))
                     sqlite3_bind_int64(statement, 4, existing)
                     sqlite3_step(statement)
                     sqlite3_finalize(statement)
@@ -166,25 +281,25 @@ final class ClipStore {
             if let body = payload.body, body.utf8.count > inlineTextLimit {
                 inlineBody = nil
                 let name = UUID().uuidString + ".txt"
-                if (try? Data(body.utf8).write(to: blobsDirectory.appendingPathComponent(name), options: .atomic)) != nil {
+                if writeSealed(Data(body.utf8), to: blobsDirectory.appendingPathComponent(name)) {
                     blobName = name
                 }
             }
             if let data = payload.blobData {
                 let name = UUID().uuidString + "." + payload.blobExtension
-                if (try? data.write(to: blobsDirectory.appendingPathComponent(name), options: .atomic)) != nil {
+                if writeSealed(data, to: blobsDirectory.appendingPathComponent(name)) {
                     blobName = name
                 }
             }
             if let data = payload.rtfData {
                 let name = UUID().uuidString + ".rtf"
-                if (try? data.write(to: blobsDirectory.appendingPathComponent(name), options: .atomic)) != nil {
+                if writeSealed(data, to: blobsDirectory.appendingPathComponent(name)) {
                     rtfName = name
                 }
             }
             if let data = payload.thumbData {
                 let name = UUID().uuidString + ".jpg"
-                if (try? data.write(to: thumbsDirectory.appendingPathComponent(name), options: .atomic)) != nil {
+                if writeSealed(data, to: thumbsDirectory.appendingPathComponent(name)) {
                     thumbName = name
                 }
             }
@@ -197,10 +312,10 @@ final class ClipStore {
             """
             guard let statement = prepare(sql) else { return nil }
             bindText(statement, 1, payload.kind.rawValue)
-            bindText(statement, 2, payload.hash)
-            bindText(statement, 3, payload.preview)
-            bindText(statement, 4, payload.searchText)
-            bindOptionalText(statement, 5, inlineBody)
+            bindText(statement, 2, hash)
+            bindText(statement, 3, vault.sealText(payload.preview))
+            bindText(statement, 4, vault.sealText(payload.searchText))
+            bindOptionalText(statement, 5, inlineBody.map(vault.sealText))
             bindOptionalText(statement, 6, blobName)
             bindOptionalText(statement, 7, rtfName)
             bindOptionalText(statement, 8, thumbName)
@@ -210,8 +325,8 @@ final class ClipStore {
             sqlite3_bind_int(statement, 12, Int32(payload.fileCount))
             sqlite3_bind_double(statement, 13, now)
             sqlite3_bind_double(statement, 14, now)
-            bindText(statement, 15, payload.sourceName)
-            bindText(statement, 16, payload.sourceBundle)
+            bindText(statement, 15, vault.sealText(payload.sourceName))
+            bindText(statement, 16, vault.sealText(payload.sourceBundle))
             let ok = sqlite3_step(statement) == SQLITE_DONE
             sqlite3_finalize(statement)
             guard ok, let db else {
@@ -263,7 +378,7 @@ final class ClipStore {
     func setLabel(_ label: String, id: Int64) {
         queue.sync {
             guard let statement = prepare("UPDATE items SET label = ? WHERE id = ?;") else { return }
-            bindText(statement, 1, label)
+            bindText(statement, 1, ClipVault.shared.sealText(label))
             sqlite3_bind_int64(statement, 2, id)
             sqlite3_step(statement)
             sqlite3_finalize(statement)
@@ -348,34 +463,32 @@ final class ClipStore {
 
     func items(filter: ClipFilter, query: String, limit: Int) -> [ClipItem] {
         queue.sync {
-            var conditions: [String] = []
             let condition = filter.sqlCondition
-            if !condition.isEmpty { conditions.append(condition) }
+            let whereClause = condition.isEmpty ? "" : " WHERE " + condition
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            // The name given to an entry matches too, so a masked "Email" is found by name.
-            if !trimmed.isEmpty { conditions.append("(search_text LIKE ? ESCAPE '\\' OR label LIKE ? ESCAPE '\\')") }
-            let whereClause = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
+            // Search text is sealed, so SQLite cannot match it. With a query the rows are
+            // opened and matched here instead; the history is capped in the thousands, which
+            // keeps this well under a frame.
             let sql = """
             SELECT id, kind, preview, pinned, pin_order, copied_at, created_at, use_count, byte_size,
                    pixel_width, pixel_height, file_count, source_name, source_bundle, thumb_name,
-                   (body IS NOT NULL OR blob_name IS NOT NULL), masked, label
+                   (body IS NOT NULL OR blob_name IS NOT NULL), masked, label, search_text
             FROM items\(whereClause)
             ORDER BY pinned DESC, CASE WHEN pinned = 1 THEN pin_order ELSE 0 END ASC, copied_at DESC
-            LIMIT ?;
+            \(trimmed.isEmpty ? "LIMIT ?" : "");
             """
             guard let statement = prepare(sql) else { return [] }
-            var index: Int32 = 1
-            if !trimmed.isEmpty {
-                let pattern = "%" + escapeForLike(trimmed) + "%"
-                bindText(statement, index, pattern)
-                bindText(statement, index + 1, pattern)
-                index += 2
-            }
-            sqlite3_bind_int(statement, index, Int32(limit))
+            if trimmed.isEmpty { sqlite3_bind_int(statement, 1, Int32(limit)) }
             var result: [ClipItem] = []
             result.reserveCapacity(min(limit, 256))
-            while sqlite3_step(statement) == SQLITE_ROW {
-                result.append(readRow(statement))
+            while result.count < limit, sqlite3_step(statement) == SQLITE_ROW {
+                let item = readRow(statement)
+                if !trimmed.isEmpty {
+                    let searchText = ClipVault.shared.openText(column(statement, 18))
+                    // The name given to an entry matches too, so a masked "Email" is found by name.
+                    guard searchText.lowercased().contains(trimmed) || item.label.lowercased().contains(trimmed) else { continue }
+                }
+                result.append(item)
             }
             sqlite3_finalize(statement)
             return result
@@ -407,15 +520,14 @@ final class ClipStore {
             var text: String?
             if sqlite3_step(statement) == SQLITE_ROW {
                 if let raw = sqlite3_column_text(statement, 0) {
-                    text = String(cString: raw)
+                    text = ClipVault.shared.openText(String(cString: raw))
                 } else if let raw = sqlite3_column_text(statement, 1),
                           let kindRaw = sqlite3_column_text(statement, 2) {
                     let kind = String(cString: kindRaw)
                     let name = String(cString: raw)
-                    if kind == ClipKind.text.rawValue || kind == ClipKind.link.rawValue || kind == ClipKind.color.rawValue {
-                        text = try? String(contentsOf: blobsDirectory.appendingPathComponent(name), encoding: .utf8)
-                    } else if kind == ClipKind.file.rawValue,
-                              let data = try? Data(contentsOf: blobsDirectory.appendingPathComponent(name)) {
+                    let textKinds = [ClipKind.text, .link, .color, .file].map(\.rawValue)
+                    if textKinds.contains(kind),
+                       let data = readSealed(at: blobsDirectory.appendingPathComponent(name)) {
                         text = String(data: data, encoding: .utf8)
                     }
                 }
@@ -436,16 +548,18 @@ final class ClipStore {
         return body.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
     }
 
-    func blobURL(id: Int64) -> URL? {
+    /// Decrypted bytes of an image entry, with the extension it was captured as.
+    func blobData(id: Int64) -> (data: Data, pathExtension: String)? {
         queue.sync {
             guard let statement = prepare("SELECT blob_name FROM items WHERE id = ?;") else { return nil }
             sqlite3_bind_int64(statement, 1, id)
-            var url: URL?
+            var result: (Data, String)?
             if sqlite3_step(statement) == SQLITE_ROW, let raw = sqlite3_column_text(statement, 0) {
-                url = blobsDirectory.appendingPathComponent(String(cString: raw))
+                let url = blobsDirectory.appendingPathComponent(String(cString: raw))
+                if let data = readSealed(at: url) { result = (data, url.pathExtension) }
             }
             sqlite3_finalize(statement)
-            return url
+            return result
         }
     }
 
@@ -455,7 +569,7 @@ final class ClipStore {
             sqlite3_bind_int64(statement, 1, id)
             var data: Data?
             if sqlite3_step(statement) == SQLITE_ROW, let raw = sqlite3_column_text(statement, 0) {
-                data = try? Data(contentsOf: blobsDirectory.appendingPathComponent(String(cString: raw)))
+                data = readSealed(at: blobsDirectory.appendingPathComponent(String(cString: raw)))
             }
             sqlite3_finalize(statement)
             return data
@@ -465,6 +579,16 @@ final class ClipStore {
     func thumbnailURL(for item: ClipItem) -> URL? {
         guard let name = item.thumbPath else { return nil }
         return thumbsDirectory.appendingPathComponent(name)
+    }
+
+    /// Folder for decrypted copies handed to other apps by drag and drop. Emptied on launch,
+    /// so a plain copy only lives as long as the drag needs it.
+    var dragDirectory: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("Clipline Drag", isDirectory: true)
+    }
+
+    func clearDragDirectory() {
+        try? FileManager.default.removeItem(at: dragDirectory)
     }
 
     struct Stats {
@@ -504,10 +628,11 @@ final class ClipStore {
 
     private func readRow(_ statement: OpaquePointer?) -> ClipItem {
         let kindRaw = column(statement, 1)
+        let vault = ClipVault.shared
         return ClipItem(
             id: sqlite3_column_int64(statement, 0),
             kind: ClipKind(rawValue: kindRaw) ?? .text,
-            preview: column(statement, 2),
+            preview: vault.openText(column(statement, 2)),
             pinned: sqlite3_column_int(statement, 3) == 1,
             pinOrder: Int(sqlite3_column_int(statement, 4)),
             copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
@@ -517,12 +642,12 @@ final class ClipStore {
             pixelWidth: Int(sqlite3_column_int(statement, 9)),
             pixelHeight: Int(sqlite3_column_int(statement, 10)),
             fileCount: Int(sqlite3_column_int(statement, 11)),
-            sourceName: column(statement, 12),
-            sourceBundle: column(statement, 13),
+            sourceName: vault.openText(column(statement, 12)),
+            sourceBundle: vault.openText(column(statement, 13)),
             thumbPath: sqlite3_column_text(statement, 14).map { String(cString: $0) },
             hasBody: sqlite3_column_int(statement, 15) == 1,
             masked: sqlite3_column_int(statement, 16) == 1,
-            label: column(statement, 17)
+            label: vault.openText(column(statement, 17))
         )
     }
 
@@ -663,13 +788,6 @@ final class ClipStore {
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .clipStoreChanged, object: nil)
         }
-    }
-
-    /// Escapes LIKE wildcards so a search for "snake_case" matches literally.
-    private func escapeForLike(_ value: String) -> String {
-        value.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "%", with: "\\%")
-            .replacingOccurrences(of: "_", with: "\\_")
     }
 
     private func exec(_ sql: String) {

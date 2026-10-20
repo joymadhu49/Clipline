@@ -136,7 +136,9 @@ final class ThumbnailCache {
         let key = name as NSString
         if let cached = cache.object(forKey: key) { return cached }
         if missing.contains(name) { return nil }
-        guard let data = try? Data(contentsOf: url), let image = NSImage(data: data) else {
+        // Thumbnails are stored sealed like everything else.
+        guard let sealed = try? Data(contentsOf: url), let data = ClipVault.shared.open(sealed),
+              let image = NSImage(data: data) else {
             missing.insert(name)
             return nil
         }

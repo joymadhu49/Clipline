@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         buildMainMenu()
         ClipStore.shared.open()
+        ClipStore.shared.clearDragDirectory()
         StatusItemController.shared.install()
         ClipboardMonitor.shared.start()
 
