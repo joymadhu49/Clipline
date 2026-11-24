@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var firstLaunch = false
@@ -113,6 +114,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if arguments.contains("-selfTestRowPress") {
+            // Presses the top row through the panel the way the mouse would: holding must open
+            // the preview and paste nothing, a quick click must paste and close the panel.
+            Task { @MainActor in
+                let controller = ClipPanelController.shared
+                let model = controller.model
+                controller.show()
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                guard let top = model.items.first else { return }
+                // Header, divider and list padding, then half a row.
+                let rowCentre: CGFloat = 66
+                let pasteboard = NSPasteboard.general
+                let countBefore = pasteboard.changeCount
+
+                controller.sendTestMouse(.leftMouseDown, fromTop: rowCentre)
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                let openedEarly = model.previewItem != nil
+                try? await Task.sleep(nanoseconds: 550_000_000)
+                let holdOpened = model.previewItem?.id == top.id
+                controller.sendTestMouse(.leftMouseUp, fromTop: rowCentre)
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                let holdPasted = pasteboard.changeCount != countBefore
+                let holdHid = !controller.isShowing
+                let previewStayed = model.previewItem?.id == top.id
+
+                model.closePreview()
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                controller.sendTestKey(" ", keyCode: UInt16(kVK_Space))
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                let spaceOpened = model.previewItem?.id == top.id
+                controller.sendTestKey(" ", keyCode: UInt16(kVK_Space))
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                let spaceClosed = model.previewItem == nil
+
+                controller.sendTestMouse(.leftMouseDown, fromTop: rowCentre)
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                controller.sendTestMouse(.leftMouseUp, fromTop: rowCentre)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                let clickPasted = pasteboard.changeCount != countBefore
+                let clickHid = !controller.isShowing
+                let clickPreviewed = model.previewItem != nil
+                ClipStore.shared.audit("selfTestRowPress kind=\(top.kind.rawValue) "
+                    + "hold: openedBeforeHoldTime=\(openedEarly) openedPreview=\(holdOpened) pasted=\(holdPasted) "
+                    + "hidPanel=\(holdHid) previewStayedAfterRelease=\(previewStayed) | "
+                    + "space: opened=\(spaceOpened) closed=\(spaceClosed) | "
+                    + "click: pasted=\(clickPasted) hidPanel=\(clickHid) openedPreview=\(clickPreviewed)")
+            }
+            return
+        }
+
+        if arguments.contains("-selfTestDragPasteboard") {
+            // Writes what a drag of the newest image and the newest file entry would carry to a
+            // private pasteboard and reads it back the way Chromium does, so a drop that would
+            // land as a typed out path is caught without dragging anything.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                for filter in [ClipFilter.image, .file, .text] {
+                    guard let item = ClipStore.shared.items(filter: filter, query: "", limit: 1).first else { continue }
+                    let pasteboard = NSPasteboard(name: NSPasteboard.Name("com.joymadhu.Clipline.selftest.drag"))
+                    pasteboard.clearContents()
+                    pasteboard.writeObjects(RowDragController.shared.pasteboardItems(for: item))
+                    let files = pasteboard.readObjects(forClasses: [NSURL.self],
+                                                       options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+                    let existing = files.filter { FileManager.default.fileExists(atPath: $0.path) }
+                    let types = (pasteboard.types ?? []).map(\.rawValue).filter { !$0.hasPrefix("dyn.") }
+                    ClipStore.shared.audit("selfTestDragPasteboard kind=\(item.kind.rawValue) files=\(files.count) "
+                        + "existing=\(existing.count) names=\(files.map(\.lastPathComponent)) "
+                        + "string=\(pasteboard.string(forType: .string) != nil) types=\(types)")
+                    pasteboard.releaseGlobally()
+                }
+            }
+            return
+        }
+
         if let index = arguments.firstIndex(of: "-selfTestShot") {
             // Renders the interface to PNGs in the support folder, so it can be reviewed
             // without a screen recording grant. QA only.
@@ -120,19 +195,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             //   -selfTestShot            every settings section
             //   -selfTestShot privacy    just that section
             //   -selfTestShot panel      the clipboard panel
+            //   -selfTestShot preview    the panel previewing its newest entry; a filter name
+            //                            after it (image, file, text, link) picks the entry
             let target = arguments.count > index + 1 ? arguments[index + 1] : nil
             let named = target.flatMap { SettingsSection(rawValue: $0) }
             let sections = named.map { [$0] } ?? SettingsSection.allCases
             Task { @MainActor in
                 let folder = ClipStore.shared.supportDirectory.appendingPathComponent("shots")
-                if target == "panel" {
+                if target == "panel" || target == "preview" {
                     // The panel is the one part of the interface a screen recording cannot
                     // reach, since it excludes itself from capture. Ask it to draw itself.
-                    ClipPanelController.shared.show()
+                    let filter = arguments.count > index + 2 ? ClipFilter(rawValue: arguments[index + 2]) : nil
+                    ClipPanelController.shared.show(filter: filter ?? .all)
+                    if target == "preview" { ClipPanelController.shared.model.showPreview() }
                     try? await Task.sleep(nanoseconds: 900_000_000)
-                    let url = folder.appendingPathComponent("panel.png")
+                    let name = [target, filter?.rawValue].compactMap { $0 }.joined(separator: "-")
+                    let url = folder.appendingPathComponent(name + ".png")
                     let written = ClipPanelController.shared.writeSnapshot(to: url)
-                    ClipStore.shared.audit("selfTestShot target=panel written=\(written) path=\(url.path)")
+                    ClipStore.shared.audit("selfTestShot target=\(name) written=\(written) path=\(url.path)")
                     return
                 }
                 for section in sections {
@@ -184,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let retentionHours = SettingsStore.shared.retentionHours
         DispatchQueue.global(qos: .utility).async {
             ClipStore.shared.trimNow(historyLimit: historyLimit, retentionHours: retentionHours)
+            ClipStore.shared.pruneDragCopies()
         }
     }
 

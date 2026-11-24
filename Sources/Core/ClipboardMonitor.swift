@@ -142,10 +142,17 @@ final class ClipboardMonitor {
 
     /// What the pasteboard held, read on the main thread and nothing more.
     private enum RawCapture {
-        case files([URL])
-        case image(Data, isTIFF: Bool)
+        /// `thumbnail` is false when images are not being kept, so a copied picture file is
+        /// not opened to draw one either.
+        case files([URL], thumbnail: Bool)
+        case image(Data, type: NSPasteboard.PasteboardType)
         case text(String, rtf: Data?)
     }
+
+    /// How far past the size limit an uncompressed image may be and still be tried. TIFF
+    /// from Safari or Preview is raw pixels and usually shrinks several times over as PNG;
+    /// the limit is applied again to what actually gets stored.
+    private static let uncompressedAllowance = 8
 
     private func readRawPasteboard(storeFiles: Bool, storeImages: Bool, limit: Int) -> RawCapture? {
         // Files first: a copied file also carries a string representation we do not want.
@@ -153,15 +160,16 @@ final class ClipboardMonitor {
            let urls = pasteboard.readObjects(forClasses: [NSURL.self],
                                              options: [.urlReadingFileURLsOnly: true]) as? [URL],
            !urls.isEmpty {
-            return .files(urls)
+            return .files(urls, thumbnail: storeImages)
         }
 
         if storeImages {
-            if let data = pasteboard.data(forType: .png), data.count <= limit {
-                return .image(data, isTIFF: false)
-            }
-            if let data = pasteboard.data(forType: .tiff), data.count <= limit {
-                return .image(data, isTIFF: true)
+            // Any image flavour, not just PNG and TIFF: some apps only put up JPEG, HEIC or
+            // GIF, and those used to fall through to whatever text came with them.
+            for type in ImageSupport.imageTypes(in: pasteboard.types ?? []) {
+                let ceiling = ImageSupport.isKeptAsIs(type) ? limit : limit * Self.uncompressedAllowance
+                guard let data = pasteboard.data(forType: type), !data.isEmpty, data.count <= ceiling else { continue }
+                return .image(data, type: type)
             }
         }
 
@@ -180,7 +188,7 @@ final class ClipboardMonitor {
         var payload: CapturedPayload
 
         switch raw {
-        case .files(let urls):
+        case .files(let urls, let wantsThumbnail):
             let paths = urls.map(\.path)
             guard let encoded = try? JSONEncoder().encode(paths) else { return nil }
             let preview = urls.count == 1
@@ -197,33 +205,42 @@ final class ClipboardMonitor {
                 fileCount: urls.count
             )
             payload.blobExtension = "json"
-            // File rows draw a system icon at display time, so no thumbnail is written.
-
-        case .image(let data, let isTIFF):
-            // TIFF from screenshots is large, so store it as PNG instead.
-            var stored = data
-            var fileExtension = "png"
-            if isTIFF {
-                if let png = convertToPNG(data) {
-                    stored = png
-                } else {
-                    fileExtension = "tiff"
+            // A copied picture, a screenshot on the Desktop most often, shows the picture
+            // rather than a document icon. Only the first image among the files is drawn.
+            // Other files draw a system icon at display time, so they get no thumbnail.
+            if wantsThumbnail,
+               let imageURL = urls.first(where: ImageSupport.isImageFile),
+               let source = ImageSupport.localImageSource(at: imageURL),
+               let thumb = ImageSupport.thumbnail(from: source, maxPixel: 256, preferEmbedded: true) {
+                payload.thumbData = thumb.data
+                payload.thumbExtension = thumb.pathExtension
+                if urls.count == 1 {
+                    let size = imageDimensions(source)
+                    payload.pixelWidth = size.width
+                    payload.pixelHeight = size.height
                 }
             }
-            let size = imageDimensions(stored)
+
+        case .image(let data, let type):
+            guard let stored = ImageSupport.storable(data, type: type, limit: limit) else { return nil }
+            let size = imageDimensions(stored.data)
             payload = CapturedPayload(
                 kind: .image,
-                hash: digest(kind: .image, data: stored),
+                hash: digest(kind: .image, data: stored.data),
                 preview: "Image",
                 searchText: "image screenshot picture",
                 body: nil,
-                blobData: stored,
-                byteSize: stored.count,
+                blobData: stored.data,
+                byteSize: stored.data.count,
                 pixelWidth: size.width,
                 pixelHeight: size.height
             )
-            payload.blobExtension = fileExtension
-            payload.thumbData = thumbnail(from: stored, maxPixel: 256)
+            payload.blobExtension = stored.pathExtension
+            if let source = CGImageSourceCreateWithData(stored.data as CFData, nil),
+               let thumb = ImageSupport.thumbnail(from: source, maxPixel: 256) {
+                payload.thumbData = thumb.data
+                payload.thumbExtension = thumb.pathExtension
+            }
 
         case .text(let string, let rtf):
             let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -283,29 +300,17 @@ final class ClipboardMonitor {
     }
 
     static func imageDimensions(_ data: Data) -> (width: Int, height: Int) {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return (0, 0) }
+        return imageDimensions(source)
+    }
+
+    static func imageDimensions(_ source: CGImageSource) -> (width: Int, height: Int) {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
             return (0, 0)
         }
         let width = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
         let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
         return (width, height)
-    }
-
-    /// Small JPEG preview generated without ever decoding the full sized image.
-    static func thumbnail(from data: Data, maxPixel: Int) -> Data? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.72] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return output as Data
     }
 
     static func convertToPNG(_ data: Data) -> Data? {

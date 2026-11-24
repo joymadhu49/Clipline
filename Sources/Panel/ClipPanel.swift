@@ -89,6 +89,7 @@ final class ClipPanelController: NSObject, NSWindowDelegate {
         }
         isVisible = false
         removeKeyMonitor()
+        model.closePreview()
         panel.orderOut(nil)
         // Normally the app the user was in never lost activation, and it simply gets the
         // keyboard back. Clipline is only active here if a dialog or the Settings window
@@ -112,6 +113,35 @@ final class ClipPanelController: NSObject, NSWindowDelegate {
     func writeSnapshot(to url: URL) -> Bool {
         guard let view = panel?.contentView else { return false }
         return view.writeSnapshot(to: url)
+    }
+
+    /// Hands the panel a left mouse event `fromTop` points below the title bar, centred
+    /// across. QA only: it presses a row the way the mouse would, through the window and
+    /// SwiftUI's gestures, without the Accessibility grant that posting real input needs.
+    func sendTestMouse(_ type: NSEvent.EventType, fromTop: CGFloat) {
+        guard let panel else { return }
+        let layout = panel.contentLayoutRect
+        let point = NSPoint(x: layout.midX, y: layout.maxY - fromTop)
+        guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                             timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: panel.windowNumber, context: nil,
+                                             eventNumber: 0, clickCount: 1,
+                                             pressure: type == .leftMouseUp ? 0 : 1) else { return }
+        panel.sendEvent(event)
+    }
+
+    /// Presses a key in the panel through the application, where the key monitor listens.
+    /// QA only, like `sendTestMouse`.
+    func sendTestKey(_ characters: String, keyCode: UInt16) {
+        guard let panel else { return }
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
+                                               timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: panel.windowNumber, context: nil,
+                                               characters: characters, charactersIgnoringModifiers: characters,
+                                               isARepeat: false, keyCode: keyCode) else { continue }
+            NSApp.sendEvent(event)
+        }
     }
 
     // MARK: Panel construction
@@ -359,6 +389,9 @@ final class ClipPanelController: NSObject, NSWindowDelegate {
 
     /// Returns true when the panel consumed the key so the search field never sees it.
     private func handle(_ event: NSEvent) -> Bool {
+        // The monitor sees every key in the app, including those typed into a dialog the
+        // panel opened. A space in the name field is a space, not a request for the preview.
+        guard event.window === panel else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = flags.contains(.command)
         let option = flags.contains(.option)
@@ -367,8 +400,28 @@ final class ClipPanelController: NSObject, NSWindowDelegate {
 
         switch Int(event.keyCode) {
         case kVK_Escape:
-            // Steps back: clear the search, put the field away, then close.
-            if !model.dismissSearchStep() { hide() }
+            // Steps back: put the preview away, clear the search, put the field away, then
+            // close.
+            if model.previewItem != nil {
+                model.closePreview()
+            } else if !model.dismissSearchStep() {
+                hide()
+            }
+            return true
+
+        case kVK_Space where !command && !option && !control:
+            // Space previews the selected entry, as in Finder. Once there is text in the
+            // search field it is just a space again; nobody starts a search with one.
+            if model.previewItem != nil {
+                model.closePreview()
+                return true
+            }
+            guard model.query.isEmpty else { return false }
+            model.showPreview()
+            return true
+
+        case kVK_ANSI_Y where command:
+            model.togglePreview()
             return true
 
         case kVK_ANSI_F where command:
@@ -454,7 +507,7 @@ final class ClipPanelController: NSObject, NSWindowDelegate {
             return true
 
         case kVK_ANSI_O where command:
-            if let item = model.selectedItem {
+            if let item = model.actionItem {
                 if item.kind == .link { model.openLink() }
                 if item.kind == .file { model.revealInFinder() }
             }

@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Transparent area that lets a drag move the window. Used behind the header only, so rows
 /// keep their own drag and drop.
@@ -216,11 +215,16 @@ struct ClipPanelView: View {
                             .id(item.id)
                             // A single click pastes. Clicking an entry in a clipboard picker
                             // means "use this one", and waiting for a second click to decide
-                            // would add a visible delay to every pick.
-                            .onTapGesture {
-                                model.selectedIndex = index
-                                model.paste(item)
-                            }
+                            // would add a visible delay to every pick. Holding still on a row
+                            // previews it instead, and moving drags it out of the panel.
+                            .rowPress(
+                                onClick: {
+                                    model.selectedIndex = index
+                                    model.paste(item)
+                                },
+                                onHold: { model.showPreview(item) },
+                                onDrag: { event in RowDragController.shared.beginDrag(item, event: event) }
+                            )
                             // The pointer carries the selection with it, so the pin and
                             // delete keys always act on the row under the mouse.
                             .onContinuousHover(coordinateSpace: .global) { phase in
@@ -229,7 +233,6 @@ struct ClipPanelView: View {
                                 }
                             }
                             .contextMenu { rowMenu(item) }
-                            .onDrag { dragProvider(for: item) }
                             .onAppear {
                                 if item.id == model.items.last?.id { model.loadMore() }
                             }
@@ -251,6 +254,10 @@ struct ClipPanelView: View {
             .overlay {
                 if model.isEmpty { emptyState }
             }
+            .overlay {
+                if let item = model.previewItem { previewOverlay(item) }
+            }
+            .animation(.easeOut(duration: 0.12), value: model.previewItem?.id)
             // No scroller down the side. In a column this narrow it took a slice of every
             // row and gave nothing back; the list is short and the wheel still scrolls it.
             .scrollIndicators(.never)
@@ -314,11 +321,30 @@ struct ClipPanelView: View {
         return "Copy something and it lands here instantly."
     }
 
+    /// The preview card, over a backdrop that hides the rows beneath it. Clicking the
+    /// backdrop puts the card away again.
+    private func previewOverlay(_ item: ClipItem) -> some View {
+        ZStack {
+            // Solid, so no row text shows faintly through the card.
+            Rectangle().fill(Theme.panelSolid)
+                .contentShape(Rectangle())
+                .onTapGesture { model.closePreview() }
+
+            ClipPreviewView(item: item,
+                            onPaste: { model.paste(item) },
+                            onCopy: { model.copyOnly(item) },
+                            onClose: { model.closePreview() })
+                .padding(8)
+        }
+        .transition(.opacity)
+    }
+
     @ViewBuilder
     private func rowMenu(_ item: ClipItem) -> some View {
         Button("Paste") { model.paste(item) }
         Button("Paste as plain text") { model.paste(item, plainText: true) }
         Button("Copy") { model.copyOnly(item) }
+        Button("Preview") { model.showPreview(item) }
         Divider()
         Button(item.pinned ? "Unpin" : "Pin") { model.togglePin(item) }
         // Masking keeps the entry fully usable while the list shows its name or dots
@@ -332,54 +358,6 @@ struct ClipPanelView: View {
         // unpinned.
         Button("Delete") { model.delete(item) }
             .disabled(item.pinned)
-    }
-
-    /// Drag payloads. Images offer both a file and the raw bytes, so a drop lands whether
-    /// the target wants a file (Finder, Mail) or image data (Pages, Figma).
-    private func dragProvider(for item: ClipItem) -> NSItemProvider {
-        switch item.kind {
-        case .image:
-            guard let blob = ClipStore.shared.blobData(id: item.id) else {
-                return NSItemProvider(object: item.preview as NSString)
-            }
-            let type = blob.pathExtension == "tiff" ? UTType.tiff : UTType.png
-            let provider = NSItemProvider()
-            provider.suggestedName = "Clipline image." + blob.pathExtension
-            provider.registerFileRepresentation(forTypeIdentifier: type.identifier,
-                                                fileOptions: [],
-                                                visibility: .all) { completion in
-                // The stored file is sealed, so the drop gets a decrypted copy. It is not
-                // opened in place, which lets the receiver copy it before the folder is
-                // emptied on the next launch.
-                let folder = ClipStore.shared.dragDirectory
-                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
-                                                         attributes: [.posixPermissions: 0o700])
-                let url = folder.appendingPathComponent(UUID().uuidString + "." + blob.pathExtension)
-                do {
-                    try blob.data.write(to: url, options: .atomic)
-                    completion(url, false, nil)
-                } catch {
-                    completion(nil, false, error)
-                }
-                return nil
-            }
-            provider.registerDataRepresentation(forTypeIdentifier: type.identifier,
-                                                visibility: .all) { completion in
-                completion(blob.data, nil)
-                return nil
-            }
-            return provider
-
-        case .file:
-            let urls = ClipStore.shared.filePaths(id: item.id)
-            if let first = urls.first, let provider = NSItemProvider(contentsOf: first) {
-                return provider
-            }
-            return NSItemProvider(object: item.preview as NSString)
-
-        case .text, .link, .color:
-            return NSItemProvider(object: model.dragText(for: item) as NSString)
-        }
     }
 
     // MARK: Footer
@@ -414,7 +392,9 @@ struct ClipPanelView: View {
         HStack(spacing: 11) {
             hint("return", "Paste")
             if !model.searchVisible { hint("⌘F", "Search") }
-            if width >= 330 { hint("⌘C", "Copy") }
+            // Ahead of Copy: Command C is the key everyone already knows, Space is not.
+            if width >= 330 { hint("space", "Preview") }
+            if width >= 400 { hint("⌘C", "Copy") }
             if width >= 420 { hint("⌘P", "Pin") }
             if width >= 500 { hint(model.searchVisible ? "⌘⌫" : "⌫", "Delete") }
             Spacer(minLength: 6)

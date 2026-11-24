@@ -104,6 +104,12 @@ struct ClipItem: Identifiable, Equatable {
 
     var isTruncated: Bool { byteSize > preview.utf8.count + 8 }
 
+    /// Whether the row draws a picture: every image, and a copied picture file once a
+    /// thumbnail was made for it.
+    var showsImage: Bool {
+        kind == .image || (kind == .file && thumbPath != nil)
+    }
+
     /// Human readable size such as "12 KB".
     var sizeText: String {
         let bytes = Double(byteSize)
@@ -129,7 +135,8 @@ struct ClipItem: Identifiable, Equatable {
         case .image:
             return pixelWidth > 0 ? "\(pixelWidth) by \(pixelHeight) px" : sizeText
         case .file:
-            return fileCount > 1 ? "\(fileCount) files" : "1 file"
+            if fileCount > 1 { return "\(fileCount) files" }
+            return pixelWidth > 0 ? "\(pixelWidth) by \(pixelHeight) px" : "1 file"
         default:
             let count = byteSize
             if count < 1024 { return "\(count) characters" }

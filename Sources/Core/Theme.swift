@@ -55,6 +55,12 @@ enum Theme {
         light: NSColor(srgbRed: 0.97, green: 0.97, blue: 0.98, alpha: 0.72),
         dark: NSColor(srgbRed: 0.07, green: 0.07, blue: 0.09, alpha: 0.80))
 
+    /// The panel's own tone with no transparency, for a layer that must hide what is under it
+    /// completely, such as the backdrop of the preview.
+    static let panelSolid = dynamic(
+        light: NSColor(srgbRed: 0.95, green: 0.95, blue: 0.96, alpha: 1),
+        dark: NSColor(srgbRed: 0.09, green: 0.09, blue: 0.11, alpha: 1))
+
     /// Settings cards. Enough lift off the page to read as a group on its own, so the rows
     /// inside need no rules between them.
     static let card = dynamic(
