@@ -18,9 +18,10 @@ struct ClipRowView: View {
 
     private var lineLimit: Int { dense ? 1 : 2 }
 
-    /// Images get a wider strip so the thumbnail is actually readable at a glance.
+    /// Images get a wider strip so the thumbnail is actually readable at a glance. A copied
+    /// picture file counts, so a screenshot copied in Finder looks like the screenshot.
     private var leadingSize: CGSize {
-        if item.kind == .image { return dense ? CGSize(width: 30, height: 20) : CGSize(width: 42, height: 28) }
+        if item.showsImage { return dense ? CGSize(width: 30, height: 20) : CGSize(width: 42, height: 28) }
         return dense ? CGSize(width: 18, height: 18) : CGSize(width: 24, height: 24)
     }
 
@@ -144,7 +145,7 @@ struct ClipRowView: View {
                         .font(.system(size: dense ? 8.5 : 10, weight: .medium))
                         .foregroundStyle(isSelected ? Theme.accent : Theme.secondaryText)
                 )
-        } else if item.kind == .image, let url = ClipStore.shared.thumbnailURL(for: item),
+        } else if item.showsImage, let url = ClipStore.shared.thumbnailURL(for: item),
            let image = ThumbnailCache.shared.image(at: url) {
             Image(nsImage: image)
                 .resizable()

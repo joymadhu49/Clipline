@@ -14,6 +14,8 @@ A native macOS clipboard manager that lives in the menu bar. Everything you copy
 
 - **History** of text, rich text, links, colours, images and files. Duplicates fold into one entry.
 - **Pinning** with ⌘P. Pinned entries stay at the top and are never trimmed.
+- **Preview** any entry by holding it down, or with Space. Screenshots and other pictures, including picture files copied in Finder, show the picture itself.
+- **Drag and drop** entries into any app. Images arrive as real image files, so Claude, Slack, Chrome and other Electron apps get the picture rather than its file path.
 - **Popup panel** on ⌘⇧V, anywhere. It opens where you last left it, at the size you left it.
 - **Search and filters** for pinned, text, links, images and files.
 - **Paste back** into the app you were in, with or without formatting.
@@ -41,12 +43,13 @@ The app is signed and notarized by Apple. Updates arrive on their own from then 
 | ⌥ return | Paste without formatting |
 | ⌘ return | Copy without pasting |
 | ⌘1 to ⌘9 | Paste that row |
+| space or ⌘Y | Preview the selected entry |
 | ⌘P | Pin or unpin |
 | ⌘H | Mask or unmask the entry |
 | ⌘⌫ | Delete the entry |
 | ⌘F | Show or hide search |
 | tab | Next filter |
-| esc | Clear the search, then close |
+| esc | Close the preview, clear the search, then close |
 
 The global shortcuts can be changed in Settings > Shortcuts.
 

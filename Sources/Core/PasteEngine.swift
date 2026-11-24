@@ -45,7 +45,7 @@ final class PasteEngine {
         switch item.kind {
         case .image:
             guard let blob = ClipStore.shared.blobData(id: item.id) else { return nil }
-            return .image(blob.data, blob.pathExtension == "tiff" ? .tiff : .png)
+            return .image(blob.data, ImageSupport.pasteboardType(forExtension: blob.pathExtension))
 
         case .file:
             let urls = ClipStore.shared.filePaths(id: item.id)
@@ -72,16 +72,7 @@ final class PasteEngine {
 
         switch payload {
         case .image(let data, let type):
-            // Apps disagree about which image flavour they accept, so offer both. Preview and
-            // Finder reach for PNG, while Pages, Mail and most editors want TIFF.
-            let entry = NSPasteboardItem()
-            entry.setData(data, forType: type)
-            if type == .png, let tiff = NSImage(data: data)?.tiffRepresentation {
-                entry.setData(tiff, forType: .tiff)
-            } else if type == .tiff, let png = ClipboardMonitor.convertToPNG(data) {
-                entry.setData(png, forType: .png)
-            }
-            pasteboard.writeObjects([entry])
+            pasteboard.writeObjects([Self.imagePasteboardItem(data, type: type)])
         case .files(let urls):
             pasteboard.writeObjects(urls as [NSURL])
         case .text(let body, let rtf):
@@ -90,6 +81,26 @@ final class PasteEngine {
         }
         ClipboardMonitor.shared.markOwnWrite()
         return true
+    }
+
+    /// An image in every flavour apps look for. The stored format goes first, so a JPEG or an
+    /// animated GIF arrives exactly as it was copied wherever that format is understood.
+    /// Preview and Finder reach for PNG, while Pages, Mail and most editors want TIFF.
+    /// `fileURL` puts the picture up as a file as well, which is what a drag needs. A drag
+    /// leaves TIFF out: AppKit makes it from the PNG if a drop asks, and building a full size
+    /// TIFF up front would stall the start of every drag of a large screenshot.
+    static func imagePasteboardItem(_ data: Data, type: NSPasteboard.PasteboardType,
+                                    fileURL: URL? = nil, includeTIFF: Bool = true) -> NSPasteboardItem {
+        let entry = NSPasteboardItem()
+        if let fileURL { entry.setString(fileURL.absoluteString, forType: .fileURL) }
+        entry.setData(data, forType: type)
+        if type != .png, let png = ClipboardMonitor.convertToPNG(data) {
+            entry.setData(png, forType: .png)
+        }
+        if includeTIFF, type != .tiff, let tiff = NSImage(data: data)?.tiffRepresentation {
+            entry.setData(tiff, forType: .tiff)
+        }
+        return entry
     }
 
     /// Copies an entry without pasting it.

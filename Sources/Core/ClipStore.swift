@@ -14,6 +14,8 @@ struct CapturedPayload {
     var blobExtension: String = "bin"
     var rtfData: Data?
     var thumbData: Data?
+    /// PNG for thumbnails with transparency, JPEG for everything else.
+    var thumbExtension: String = "jpg"
     var byteSize: Int
     var pixelWidth: Int = 0
     var pixelHeight: Int = 0
@@ -298,7 +300,7 @@ final class ClipStore {
                 }
             }
             if let data = payload.thumbData {
-                let name = UUID().uuidString + ".jpg"
+                let name = UUID().uuidString + "." + payload.thumbExtension
                 if writeSealed(data, to: thumbsDirectory.appendingPathComponent(name)) {
                     thumbName = name
                 }
@@ -581,14 +583,42 @@ final class ClipStore {
         return thumbsDirectory.appendingPathComponent(name)
     }
 
-    /// Folder for decrypted copies handed to other apps by drag and drop. Emptied on launch,
-    /// so a plain copy only lives as long as the drag needs it.
+    /// Folder for decrypted copies handed to other apps by drag and drop. Emptied on launch
+    /// and pruned as the app runs, so a plain copy only lives as long as the drop needs it.
     var dragDirectory: URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("Clipline Drag", isDirectory: true)
     }
 
     func clearDragDirectory() {
         try? FileManager.default.removeItem(at: dragDirectory)
+    }
+
+    /// Writes a decrypted copy of an entry for a drag, under the name the receiving app will
+    /// show. Each drag gets a folder of its own, so two drags can share a name.
+    func writeDragCopy(_ data: Data, named name: String) -> URL? {
+        let folder = dragDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            // Owner only, the same as the support folder.
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            let url = folder.appendingPathComponent(name)
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    /// Removes drag copies older than `age`. Apps read a dropped file straight away, or at
+    /// the latest when the message it was dropped into is sent, so an hour is plenty.
+    func pruneDragCopies(olderThan age: TimeInterval = 3_600) {
+        let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-age)
+        let folders = (try? fm.contentsOfDirectory(at: dragDirectory, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        for folder in folders {
+            let created = (try? folder.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            if created < cutoff { try? fm.removeItem(at: folder) }
+        }
     }
 
     struct Stats {

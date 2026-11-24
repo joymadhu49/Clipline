@@ -26,6 +26,8 @@ final class PanelModel: ObservableObject {
     /// selection deliberately leaves it alone: the pointer already sits on the row, and
     /// scrolling would drag a different row underneath it.
     @Published private(set) var scrollToken: Int = 0
+    /// The entry shown large over the list, or nil while the list is showing.
+    @Published private(set) var previewItem: ClipItem?
 
     private let pageSize = 120
 
@@ -42,6 +44,11 @@ final class PanelModel: ObservableObject {
         items.indices.contains(selectedIndex) ? items[selectedIndex] : nil
     }
 
+    /// What a key acts on: the entry in the preview while it is open, the selection otherwise.
+    var actionItem: ClipItem? {
+        previewItem ?? selectedItem
+    }
+
     var isEmpty: Bool { items.isEmpty }
 
     // MARK: Loading
@@ -56,6 +63,7 @@ final class PanelModel: ObservableObject {
         isPreparing = false
 
         limit = pageSize
+        previewItem = nil
         searchVisible = SettingsStore.shared.showSearchField
         // Forget the pointer between opens, so the first hover event after the panel
         // appears cannot move the selection off the top row.
@@ -106,6 +114,10 @@ final class PanelModel: ObservableObject {
             selectedIndex = 0
             scrollToken &+= 1
         }
+        // The previewed entry may have been pinned, renamed or deleted underneath the card.
+        if let previewID = previewItem?.id {
+            previewItem = items.first { $0.id == previewID }
+        }
     }
 
     func loadMore() {
@@ -132,18 +144,44 @@ final class PanelModel: ObservableObject {
         selectedIndex = min(max(0, next), items.count - 1)
         scrollToken &+= 1
         if selectedIndex > items.count - 8 { loadMore() }
+        followSelectionWithPreview()
     }
 
     func moveToStart() {
         guard !items.isEmpty else { return }
         selectedIndex = 0
         scrollToken &+= 1
+        followSelectionWithPreview()
     }
 
     func moveToEnd() {
         guard !items.isEmpty else { return }
         selectedIndex = items.count - 1
         scrollToken &+= 1
+        followSelectionWithPreview()
+    }
+
+    // MARK: Preview
+
+    /// Shows an entry large over the list. A masked entry opens too, and stays masked.
+    func showPreview(_ item: ClipItem? = nil) {
+        guard let item = item ?? actionItem else { return }
+        if let index = items.firstIndex(where: { $0.id == item.id }) { selectedIndex = index }
+        previewItem = item
+    }
+
+    func closePreview() {
+        if previewItem != nil { previewItem = nil }
+    }
+
+    func togglePreview() {
+        if previewItem == nil { showPreview() } else { closePreview() }
+    }
+
+    /// With the preview open the arrow keys page through entries, the way Quick Look does.
+    private func followSelectionWithPreview() {
+        guard previewItem != nil, let selectedItem else { return }
+        previewItem = selectedItem
     }
 
     /// Hovering a row selects it, so the pin and delete keys act on the entry under the
@@ -151,6 +189,9 @@ final class PanelModel: ObservableObject {
     /// which stay put while the list scrolls beneath a resting mouse.
     func hoverSelect(_ index: Int, pointer: CGPoint) {
         defer { lastPointer = pointer }
+        // The rows sit under the preview card while it is open, and must not trade the
+        // selection behind its back.
+        guard previewItem == nil else { return }
         guard items.indices.contains(index), selectedIndex != index else { return }
         guard let last = lastPointer,
               abs(pointer.x - last.x) > 1 || abs(pointer.y - last.y) > 1 else { return }
@@ -167,7 +208,7 @@ final class PanelModel: ObservableObject {
     // MARK: Actions
 
     func paste(_ item: ClipItem? = nil, plainText: Bool = false) {
-        guard let item = item ?? selectedItem else { return }
+        guard let item = item ?? actionItem else { return }
         let plain = plainText || SettingsStore.shared.pastePlainByDefault
         // Stay open and say so if the stored content has gone missing.
         guard PasteEngine.shared.stage(item, plainText: plain) else {
@@ -179,7 +220,7 @@ final class PanelModel: ObservableObject {
     }
 
     func copyOnly(_ item: ClipItem? = nil) {
-        guard let item = item ?? selectedItem else { return }
+        guard let item = item ?? actionItem else { return }
         guard PasteEngine.shared.copy(item) else {
             reportMissing(item)
             return
@@ -195,7 +236,7 @@ final class PanelModel: ObservableObject {
     }
 
     func togglePin(_ item: ClipItem? = nil) {
-        guard let item = item ?? selectedItem else { return }
+        guard let item = item ?? actionItem else { return }
         ClipStore.shared.setPinned(!item.pinned, id: item.id)
         showToast(item.pinned ? "Unpinned" : "Pinned")
         reload()
@@ -204,7 +245,7 @@ final class PanelModel: ObservableObject {
     /// Masks or unmasks an entry. Masked entries paste as normal, but the list shows their
     /// name or dots instead of the content, safe on a shared or recorded screen.
     func toggleMasked(_ item: ClipItem? = nil) {
-        guard let item = item ?? selectedItem else { return }
+        guard let item = item ?? actionItem else { return }
         ClipStore.shared.setMasked(!item.masked, id: item.id)
         showToast(item.masked ? "Content shown again" : "Content hidden")
         reload()
@@ -213,7 +254,7 @@ final class PanelModel: ObservableObject {
     /// Asks for a name for the entry. The name stands in for the content in the list, which
     /// is what makes a masked entry tell you what it is without showing what it holds.
     func rename(_ item: ClipItem? = nil) {
-        guard let item = item ?? selectedItem else { return }
+        guard let item = item ?? actionItem else { return }
         ClipPanelController.shared.runHoldingPanel {
             let alert = NSAlert()
             alert.messageText = "Name this entry"
@@ -234,7 +275,7 @@ final class PanelModel: ObservableObject {
     }
 
     func delete(_ item: ClipItem? = nil) {
-        guard let item = item ?? selectedItem else { return }
+        guard let item = item ?? actionItem else { return }
         // Pinning means keep this one, so it has to be unpinned before it can go.
         guard !item.pinned else {
             showToast("Pinned. Press Command P to unpin it first")
@@ -253,7 +294,7 @@ final class PanelModel: ObservableObject {
     }
 
     func openLink(_ item: ClipItem? = nil) {
-        guard let item = item ?? selectedItem, item.kind == .link,
+        guard let item = item ?? actionItem, item.kind == .link,
               let body = ClipStore.shared.body(id: item.id),
               let url = URL(string: body.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
         ClipPanelController.shared.hide()
@@ -261,7 +302,7 @@ final class PanelModel: ObservableObject {
     }
 
     func revealInFinder(_ item: ClipItem? = nil) {
-        guard let item = item ?? selectedItem, item.kind == .file else { return }
+        guard let item = item ?? actionItem, item.kind == .file else { return }
         let urls = ClipStore.shared.filePaths(id: item.id)
         guard !urls.isEmpty else { return }
         ClipPanelController.shared.hide()
@@ -276,10 +317,5 @@ final class PanelModel: ObservableObject {
             guard !Task.isCancelled else { return }
             self?.toast = nil
         }
-    }
-
-    /// Text handed to the drag session when a row is dragged out of the panel.
-    func dragText(for item: ClipItem) -> String {
-        ClipStore.shared.body(id: item.id) ?? item.preview
     }
 }
